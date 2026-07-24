@@ -1,26 +1,20 @@
 import { addEdge, Background, type Connection, type Edge, type Node, ReactFlow } from "@xyflow/react";
 import { FitToTop } from "@/components/FitToTop";
-import type { Relation } from "@/entities/relation/types";
-import { buildGenealogyGraph, edgeTypes, nodeTypes } from "@/features/genealogyLayout";
+import { edgeTypes, nodeTypes } from "@/features/genealogyLayout";
 
 import "@xyflow/react/dist/style.css";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { useLoaderData } from "react-router";
 
+type GenealogyLoaderData = {
+  nodes: Node[];
+  edges: Edge[];
+};
+
 export function Home() {
-  const relations = useLoaderData<Relation[]>();
-
-  const [nodes, setNodes] = useState<Node[]>([]);
-  const [edges, setEdges] = useState<Edge[]>([]);
-
-  useEffect(() => {
-    (async () => {
-      const graph = await buildGenealogyGraph(relations);
-      setNodes(graph.nodes);
-      setEdges(graph.edges);
-    })();
-  }, [relations]);
+  const { nodes, edges: initialEdges } = useLoaderData<GenealogyLoaderData>();
+  const [edges, setEdges] = useState<Edge[]>(initialEdges);
 
   const onConnect = useCallback(
     (params: Connection) => setEdges((edgesSnapshot) => addEdge({ ...params, type: "descent" }, edgesSnapshot)),
