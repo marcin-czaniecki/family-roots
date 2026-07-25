@@ -5,6 +5,11 @@ import { TREE_GROWS_UP } from "@/features/genealogyDirection";
 
 type Sex = boolean;
 
+type PersonNodeData = Person & {
+  editMode?: boolean;
+  onEdit?: (person: Person) => void;
+};
+
 const fadeIn = keyframes`
   from {
     opacity: 0;
@@ -171,6 +176,31 @@ const Biography = styled.aside<{ $growsUp: boolean }>`
     transform: translate(-50%, 0);
   }
 `;
+const EditButton = styled.button`
+  position: absolute;
+  z-index: 10;
+  top: 0.65rem;
+  right: 0.65rem;
+  width: 2.5rem;
+  height: 2.5rem;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: #fff;
+  color: var(--accent);
+  font: inherit;
+  font-size: 1.5rem;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(28, 42, 34, 0.14);
+
+  &:hover,
+  &:focus-visible {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: #fff;
+    outline: none;
+  }
+`;
 const handleStyle = {
   opacity: 0,
   width: 8,
@@ -197,7 +227,7 @@ function formatLifespan(person: Person): string {
   return "";
 }
 
-export function PersonNode({ data: person }: { data: Person }) {
+export function PersonNode({ data: person }: { data: PersonNodeData }) {
   const lifespan = formatLifespan(person);
   const place = person.birthPlace || person.deathPlace;
   const biography = person.biography?.trim();
@@ -212,6 +242,21 @@ export function PersonNode({ data: person }: { data: Person }) {
       <Handle type="source" position={childSide} id="child" style={handleStyle} />
       <Handle type="source" position={Position.Right} id="partner-first" style={handleStyle} />
       <Handle type="source" position={Position.Left} id="partner-second" style={handleStyle} />
+
+      {person.editMode && person.onEdit ? (
+        <EditButton
+          type="button"
+          className="nodrag nopan"
+          aria-label={`Edytuj ${person.firstName} ${person.lastName}`}
+          title="Edytuj osobę"
+          onClick={(event) => {
+            event.stopPropagation();
+            person.onEdit?.(person);
+          }}
+        >
+          ✎
+        </EditButton>
+      ) : null}
 
       <Body $growsUp={growsUp}>
         <Name>

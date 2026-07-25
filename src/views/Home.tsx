@@ -1,5 +1,5 @@
 import { Background, type Edge, type Node, type OnConnectEnd, Panel, ReactFlow, useReactFlow } from "@xyflow/react";
-import { collection, doc, serverTimestamp, writeBatch } from "firebase/firestore";
+import { collection, doc, serverTimestamp, updateDoc, writeBatch } from "firebase/firestore";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLoaderData, useRevalidator } from "react-router";
 import styled from "styled-components";
@@ -86,6 +86,44 @@ function validatePartialDate(day: string, month: string, year: string, label: st
   return null;
 }
 
+function personToForm(person: Person): NewPersonValues {
+  return {
+    biography: person.biography ?? "",
+    firstName: person.firstName,
+    lastName: person.lastName,
+    middleNames: (person.middleNames ?? []).join(", "),
+    birthDay: person.birth?.day ? String(person.birth.day) : "",
+    birthMonth: person.birth?.month ? String(person.birth.month) : "",
+    birthYear: person.birth?.year ? String(person.birth.year) : "",
+    birthPlace: person.birthPlace ?? "",
+    birthSurname: person.birthSurname ?? "",
+    deathDay: person.death?.day ? String(person.death.day) : "",
+    deathMonth: person.death?.month ? String(person.death.month) : "",
+    deathYear: person.death?.year ? String(person.death.year) : "",
+    deathPlace: person.deathPlace ?? "",
+    photoUrl: person.photoUrl ?? "",
+    sex: person.sex ? "male" : "female",
+  };
+}
+
+function editablePersonPayload(person: NewPersonValues) {
+  return {
+    biography: person.biography.trim() || null,
+    firstName: person.firstName.trim(),
+    lastName: person.lastName.trim(),
+    middleNames: person.middleNames
+      .split(",")
+      .map((name) => name.trim())
+      .filter(Boolean),
+    birth: buildPartialDate(person.birthDay, person.birthMonth, person.birthYear),
+    birthPlace: person.birthPlace.trim() || null,
+    birthSurname: person.birthSurname.trim() || null,
+    death: buildPartialDate(person.deathDay, person.deathMonth, person.deathYear),
+    deathPlace: person.deathPlace.trim() || null,
+    photoUrl: person.photoUrl.trim() || null,
+    sex: person.sex === "male",
+  };
+}
 type RelationTarget = { mode: "existing"; personId: string } | { mode: "new"; person: NewPersonValues };
 
 type RelationDraft =
@@ -118,7 +156,24 @@ export function Home() {
   const [graph, setGraph] = useState(() => ({ nodes: loadedNodes, edges: loadedEdges }));
   const [editMode, setEditMode] = useState(false);
   const [draft, setDraft] = useState<RelationDraft | null>(null);
+  const [editingPerson, setEditingPerson] = useState<Person | null>(null);
   const peopleById = useMemo(() => new Map(people.map((person) => [person.id, person])), [people]);
+  const openPersonEditor = useCallback((person: Person) => {
+    setDraft(null);
+    setEditingPerson(person);
+  }, []);
+  const diagramNodes = useMemo(
+    () =>
+      graph.nodes.map((node) =>
+        node.type === "person"
+          ? {
+              ...node,
+              data: { ...node.data, editMode, onEdit: openPersonEditor },
+            }
+          : node,
+      ),
+    [editMode, graph.nodes, openPersonEditor],
+  );
 
   useEffect(() => {
     setGraph({ nodes: loadedNodes, edges: loadedEdges });
@@ -257,13 +312,23 @@ export function Home() {
     setDraft(null);
     void revalidator.revalidate();
   };
+  const savePerson = async (personId: string, values: NewPersonValues) => {
+    await updateDoc(doc(db, "people", personId), {
+      ...editablePersonPayload(values),
+      updatedAt: serverTimestamp(),
+    });
+    const nextGraph = await buildGenealogyGraph(relations);
+    setGraph(nextGraph);
+    setEditingPerson(null);
+    void revalidator.revalidate();
+  };
   return (
     <Canvas>
       <ReactFlow
         className={editMode ? "genealogy-flow is-editing" : "genealogy-flow"}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
-        nodes={graph.nodes}
+        nodes={diagramNodes}
         edges={graph.edges}
         nodesConnectable={editMode}
         connectOnClick={false}
@@ -287,7 +352,10 @@ export function Home() {
               onChange={(event) => {
                 const enabled = event.target.checked;
                 setEditMode(enabled);
-                if (!enabled) setDraft(null);
+                if (!enabled) {
+                  setDraft(null);
+                  setEditingPerson(null);
+                }
               }}
             />
             <ModeTrack aria-hidden="true" />
@@ -336,6 +404,9 @@ export function Home() {
 
       {draft ? (
         <RelationEditor key={draft.id} draft={draft} people={people} onCancel={() => setDraft(null)} onSave={(target) => saveRelation(draft, target)} />
+      ) : null}
+      {editingPerson ? (
+        <EditPersonEditor person={editingPerson} onCancel={() => setEditingPerson(null)} onSave={(values) => savePerson(editingPerson.id, values)} />
       ) : null}
     </Canvas>
   );
@@ -449,6 +520,126 @@ function DiagramPersonSearch({ nodes }: { nodes: Node[] }) {
         ) : null}
       </DiagramSearchPanel>
     </Panel>
+  );
+}
+function EditPersonEditor({ person, onCancel, onSave }: { person: Person; onCancel: () => void; onSave: (values: NewPersonValues) => Promise<void> }) {
+  const [form, setForm] = useState(() => personToForm(person));
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const update = <K extends keyof NewPersonValues>(key: K, value: NewPersonValues[K]) => {
+    setForm((current) => ({ ...current, [key]: value }));
+  };
+
+  const textField = (
+    id: string,
+    label: string,
+    key: Exclude<keyof NewPersonValues, "sex">,
+    options: { required?: boolean; span?: boolean; inputMode?: "numeric"; placeholder?: string; autoFocus?: boolean } = {},
+  ) => (
+    <EditorField $span={options.span}>
+      <EditorLabel htmlFor={id}>
+        {label}
+        {options.required ? " *" : ""}
+      </EditorLabel>
+      <EditorInput
+        id={id}
+        value={form[key]}
+        required={options.required}
+        inputMode={options.inputMode}
+        placeholder={options.placeholder}
+        autoFocus={options.autoFocus}
+        onChange={(event) => update(key, event.target.value)}
+      />
+    </EditorField>
+  );
+
+  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setError(null);
+
+    if (!form.firstName.trim() || !form.lastName.trim()) {
+      setError("Imię i nazwisko są wymagane.");
+      return;
+    }
+    const dateError =
+      validatePartialDate(form.birthDay, form.birthMonth, form.birthYear, "Data urodzenia") ??
+      validatePartialDate(form.deathDay, form.deathMonth, form.deathYear, "Data śmierci");
+    if (dateError) {
+      setError(dateError);
+      return;
+    }
+
+    setSaving(true);
+    try {
+      await onSave(form);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Nie udało się zapisać osoby.");
+      setSaving(false);
+    }
+  };
+
+  return (
+    <EditorDrawer className="nodrag nopan nowheel" onSubmit={handleSubmit}>
+      <EditorHeader>
+        <div>
+          <EditorTitle>Edytuj osobę</EditorTitle>
+          <EditorContext>{personName(person)}</EditorContext>
+        </div>
+        <CloseButton type="button" onClick={onCancel} aria-label="Zamknij formularz" title="Zamknij">
+          ×
+        </CloseButton>
+      </EditorHeader>
+
+      <EditorGrid>
+        {textField("edit-first-name", "Imię", "firstName", { required: true, autoFocus: true })}
+        {textField("edit-last-name", "Nazwisko", "lastName", { required: true })}
+        {textField("edit-middle-names", "Drugie imiona", "middleNames", { span: true, placeholder: "oddzielone przecinkami" })}
+        {textField("edit-birth-surname", "Nazwisko rodowe", "birthSurname")}
+        <EditorField>
+          <EditorLabel htmlFor="edit-sex">Płeć</EditorLabel>
+          <EditorSelect id="edit-sex" value={form.sex} onChange={(event) => update("sex", event.target.value as NewPersonValues["sex"])}>
+            <option value="female">Kobieta</option>
+            <option value="male">Mężczyzna</option>
+          </EditorSelect>
+        </EditorField>
+      </EditorGrid>
+
+      <EditorSectionLabel>Urodzenie</EditorSectionLabel>
+      <EditorGrid>
+        {textField("edit-birth-day", "Dzień", "birthDay", { inputMode: "numeric", placeholder: "dd" })}
+        {textField("edit-birth-month", "Miesiąc", "birthMonth", { inputMode: "numeric", placeholder: "mm" })}
+        {textField("edit-birth-year", "Rok", "birthYear", { inputMode: "numeric", placeholder: "rrrr" })}
+        {textField("edit-birth-place", "Miejsce", "birthPlace")}
+      </EditorGrid>
+
+      <EditorSectionLabel>Śmierć</EditorSectionLabel>
+      <EditorGrid>
+        {textField("edit-death-day", "Dzień", "deathDay", { inputMode: "numeric", placeholder: "dd" })}
+        {textField("edit-death-month", "Miesiąc", "deathMonth", { inputMode: "numeric", placeholder: "mm" })}
+        {textField("edit-death-year", "Rok", "deathYear", { inputMode: "numeric", placeholder: "rrrr" })}
+        {textField("edit-death-place", "Miejsce", "deathPlace")}
+      </EditorGrid>
+
+      <EditorSectionLabel>Informacje dodatkowe</EditorSectionLabel>
+      <EditorGrid>
+        {textField("edit-photo-url", "URL zdjęcia", "photoUrl", { span: true, placeholder: "https://…" })}
+        <EditorField $span>
+          <EditorLabel htmlFor="edit-biography">Biografia</EditorLabel>
+          <EditorTextarea id="edit-biography" rows={5} value={form.biography} onChange={(event) => update("biography", event.target.value)} />
+        </EditorField>
+      </EditorGrid>
+
+      {error ? <EditorError>{error}</EditorError> : null}
+      <EditorActions>
+        <SaveButton type="submit" disabled={saving}>
+          {saving ? "Zapisywanie…" : "Zapisz zmiany"}
+        </SaveButton>
+        <CancelButton type="button" onClick={onCancel} disabled={saving}>
+          Anuluj
+        </CancelButton>
+      </EditorActions>
+    </EditorDrawer>
   );
 }
 function RelationEditor({
