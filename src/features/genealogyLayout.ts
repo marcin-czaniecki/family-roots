@@ -6,6 +6,7 @@ import { getPerson } from "@/entities/person/getPerson";
 import type { Person } from "@/entities/person/types";
 import { childrenOf, isPartner, partnerOf, sideOfKid } from "@/entities/relation/helpers";
 import type { PartnerRelation, Relation } from "@/entities/relation/types";
+import { TREE_GROWS_UP } from "./genealogyDirection";
 
 export const nodeTypes = {
   person: PersonNode,
@@ -26,6 +27,7 @@ const RELATION_SIZE = 14;
 const GAP = 64;
 const GEN_H = 400;
 const COUPLE_GAP = 40;
+const GEN_STEP = TREE_GROWS_UP ? -GEN_H : GEN_H;
 
 function birthRank(person: Person): number {
   const y = person.birth?.year ?? 9999;
@@ -175,7 +177,7 @@ async function placePartnership(
   const leftStart = leftW > 0 ? centerStart - GAP - leftW : 0;
   const rightStart = centerW > 0 ? centerStart + centerW + GAP : centerX + COUPLE_GAP / 2 + PERSON_W / 2 + GAP;
 
-  const childY = y + GEN_H;
+  const childY = y + GEN_STEP;
 
   const placeGroup = async (group: typeof kidsWithPeople, startX: number) => {
     let cursor = startX;

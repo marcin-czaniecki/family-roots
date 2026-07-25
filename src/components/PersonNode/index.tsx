@@ -1,13 +1,14 @@
 import { Handle, Position } from "@xyflow/react";
 import styled, { css, keyframes } from "styled-components";
 import type { Person } from "@/entities/person/types";
+import { TREE_GROWS_UP } from "@/features/genealogyDirection";
 
 type Sex = boolean;
 
 const fadeIn = keyframes`
   from {
     opacity: 0;
-    transform: translateY(4px);
+    transform: translateY(var(--enter-y, 4px));
   }
   to {
     opacity: 1;
@@ -15,13 +16,14 @@ const fadeIn = keyframes`
   }
 `;
 
-const Card = styled.article<{ $sex: Sex }>`
+const Card = styled.article<{ $sex: Sex; $growsUp: boolean }>`
   --ink: #1c2a22;
   --muted: #5c6b62;
   --paper: #f7f4ef;
   --line: #c5b8a4;
   --accent: ${({ $sex }) => ($sex ? "#3d5a4c" : "#6b4f3a")};
   --photo-fallbacks: #dfe6e1;
+  --enter-y: ${({ $growsUp }) => ($growsUp ? "-4px" : "4px")};
 
   box-sizing: border-box;
   width: 168px;
@@ -32,7 +34,14 @@ const Card = styled.article<{ $sex: Sex }>`
   overflow: hidden;
   background: var(--paper);
   border: 1px solid var(--line);
-  border-top: 3px solid var(--accent);
+  ${({ $growsUp }) =>
+    $growsUp
+      ? css`
+          border-bottom: 3px solid var(--accent);
+        `
+      : css`
+          border-top: 3px solid var(--accent);
+        `}
   box-shadow: 0 1px 0 rgba(28, 42, 34, 0.06);
   animation: ${fadeIn} 0.35s ease-out both;
   transition:
@@ -41,13 +50,13 @@ const Card = styled.article<{ $sex: Sex }>`
     border-color 0.2s ease;
 
   &:hover {
-    transform: translateY(-2px);
+    transform: translateY(${({ $growsUp }) => ($growsUp ? "2px" : "-2px")});
     box-shadow: 0 6px 16px rgba(28, 42, 34, 0.1);
     border-color: var(--accent);
   }
 `;
 
-const Photo = styled.div<{ $hasImage: boolean }>`
+const Photo = styled.div<{ $hasImage: boolean; $growsUp: boolean }>`
   position: relative;
   width: 100%;
   height: 196px;
@@ -72,15 +81,15 @@ const Photo = styled.div<{ $hasImage: boolean }>`
     width: 100%;
     height: 100%;
     object-fit: cover;
-    object-position: center top;
+    object-position: ${({ $growsUp }) => ($growsUp ? "center bottom" : "center top")};
     display: block;
   }
 `;
 
-const Body = styled.div`
+const Body = styled.div<{ $growsUp: boolean }>`
   flex: 1;
   display: flex;
-  flex-direction: column;
+  flex-direction: ${({ $growsUp }) => ($growsUp ? "column-reverse" : "column")};
   gap: 0.2rem;
   padding: 0.55rem 0.65rem 0.7rem;
   text-align: center;
@@ -143,19 +152,22 @@ function formatLifespan(person: Person): string {
 export function PersonNode({ data: person }: { data: Person }) {
   const lifespan = formatLifespan(person);
   const place = person.birthPlace || person.deathPlace;
+  const growsUp = TREE_GROWS_UP;
+  const parentSide = growsUp ? Position.Bottom : Position.Top;
+  const childSide = growsUp ? Position.Top : Position.Bottom;
 
   return (
-    <Card $sex={person.sex}>
-      <Handle type="target" position={Position.Top} id="parent" style={handleStyle} />
-      <Handle type="source" position={Position.Bottom} id="child" style={handleStyle} />
+    <Card $sex={person.sex} $growsUp={growsUp}>
+      <Handle type="target" position={parentSide} id="parent" style={handleStyle} />
+      <Handle type="source" position={childSide} id="child" style={handleStyle} />
       <Handle type="source" position={Position.Right} id="partner-first" style={handleStyle} />
       <Handle type="source" position={Position.Left} id="partner-second" style={handleStyle} />
 
-      <Photo $hasImage={Boolean(person.photoUrl)}>
+      <Photo $hasImage={Boolean(person.photoUrl)} $growsUp={growsUp}>
         {person.photoUrl ? <img src={person.photoUrl} alt={`${person.firstName} ${person.lastName}`} draggable={false} /> : null}
       </Photo>
 
-      <Body>
+      <Body $growsUp={growsUp}>
         <Name>
           {person.firstName} {person.lastName}
         </Name>
