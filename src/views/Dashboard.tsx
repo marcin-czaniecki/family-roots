@@ -1,5 +1,5 @@
-import { addDoc, collection, serverTimestamp } from "firebase/firestore";
-import { useState } from "react";
+import { addDoc, collection, doc, serverTimestamp } from "firebase/firestore";
+import { useMemo, useState } from "react";
 import { useLoaderData, useRevalidator } from "react-router";
 import styled from "styled-components";
 import type { Person } from "@/entities/person/types";
@@ -24,7 +24,16 @@ type PersonFormValues = {
   sex: "male" | "female";
 };
 
-const emptyForm = (): PersonFormValues => ({
+type RelationFormValues = {
+  type: "partner" | "parent";
+  firstId: string;
+  secondId: string;
+  root: boolean;
+  personId: string;
+  parentshipId: string;
+};
+
+const emptyPersonForm = (): PersonFormValues => ({
   biography: "",
   firstName: "",
   lastName: "",
@@ -40,6 +49,15 @@ const emptyForm = (): PersonFormValues => ({
   deathPlace: "",
   photoUrl: "",
   sex: "female",
+});
+
+const emptyRelationForm = (): RelationFormValues => ({
+  type: "partner",
+  firstId: "",
+  secondId: "",
+  root: false,
+  personId: "",
+  parentshipId: "",
 });
 
 function parseOptionalInt(value: string): number | null {
@@ -58,7 +76,7 @@ function buildPartialDate(day: string, month: string, year: string) {
   };
 }
 
-function toFirestorePayload(form: PersonFormValues) {
+function toPersonPayload(form: PersonFormValues) {
   const middleNames = form.middleNames
     .split(",")
     .map((name) => name.trim())
@@ -82,26 +100,47 @@ function toFirestorePayload(form: PersonFormValues) {
   };
 }
 
+function personLabel(person: Person) {
+  return `${person.firstName} ${person.lastName}`.trim() || person.id;
+}
+
+function refId(value: { id?: string } | null | undefined) {
+  return value?.id ?? null;
+}
+
 export function Dashboard() {
-  const { people } = useLoaderData<{ relations: Relation[]; people: Person[] }>();
+  const { people, relations } = useLoaderData<{ relations: Relation[]; people: Person[] }>();
+  const peopleById = useMemo(() => new Map(people.map((person) => [person.id, person])), [people]);
 
   return (
     <Page>
       <Header>
-        <Title>Panel osób</Title>
-        <Subtitle>Dodawanie i przegląd rekordów z kolekcji people</Subtitle>
+        <Title>Panel danych</Title>
+        <Subtitle>Osoby (people) i relacje (relations)</Subtitle>
       </Header>
-      <Layout>
-        <PersonForm />
-        <PersonList people={people} />
-      </Layout>
+
+      <Section>
+        <SectionHeading>Osoby</SectionHeading>
+        <Layout>
+          <PersonForm />
+          <PersonList people={people} />
+        </Layout>
+      </Section>
+
+      <Section>
+        <SectionHeading>Relacje</SectionHeading>
+        <Layout>
+          <RelationForm people={people} relations={relations} />
+          <RelationList relations={relations} peopleById={peopleById} />
+        </Layout>
+      </Section>
     </Page>
   );
 }
 
 function PersonForm() {
   const revalidator = useRevalidator();
-  const [form, setForm] = useState<PersonFormValues>(emptyForm);
+  const [form, setForm] = useState<PersonFormValues>(emptyPersonForm);
   const [status, setStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [error, setError] = useState<string | null>(null);
 
@@ -124,8 +163,8 @@ function PersonForm() {
     setStatus("saving");
     setError(null);
     try {
-      await addDoc(collection(db, "people"), toFirestorePayload(form));
-      setForm(emptyForm());
+      await addDoc(collection(db, "people"), toPersonPayload(form));
+      setForm(emptyPersonForm());
       setStatus("saved");
       revalidator.revalidate();
     } catch (err) {
@@ -243,13 +282,218 @@ function PersonList({ people }: { people: Person[] }) {
         <List>
           {people.map((person) => (
             <ListItem key={person.id}>
-              <PersonName>
-                {person.firstName} {person.lastName}
-              </PersonName>
-              <PersonMeta>
+              <ItemTitle>{personLabel(person)}</ItemTitle>
+              <ItemMeta>
                 {person.birth?.year ? `* ${person.birth.year}` : "—"}
                 {person.birthPlace ? ` · ${person.birthPlace}` : ""}
-              </PersonMeta>
+              </ItemMeta>
+            </ListItem>
+          ))}
+        </List>
+      )}
+    </Card>
+  );
+}
+
+function RelationForm({ people, relations }: { people: Person[]; relations: Relation[] }) {
+  const revalidator = useRevalidator();
+  const [form, setForm] = useState<RelationFormValues>(emptyRelationForm);
+  const [status, setStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [error, setError] = useState<string | null>(null);
+
+  const partnerRelations = useMemo(() => relations.filter((relation) => relation.type === "partner"), [relations]);
+
+  const update = <K extends keyof RelationFormValues>(key: K, value: RelationFormValues[K]) => {
+    setForm((prev) => ({ ...prev, [key]: value }));
+    if (status !== "idle") {
+      setStatus("idle");
+      setError(null);
+    }
+  };
+
+  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+
+    if (!form.firstId) {
+      setStatus("error");
+      setError("Wybierz pierwszą osobę (first).");
+      return;
+    }
+
+    if (form.type === "parent" && !form.personId) {
+      setStatus("error");
+      setError("Relacja parent wymaga wskazania dziecka (person).");
+      return;
+    }
+
+    setStatus("saving");
+    setError(null);
+
+    try {
+      const first = doc(db, "people", form.firstId);
+      const second = form.secondId ? doc(db, "people", form.secondId) : null;
+
+      if (form.type === "partner") {
+        await addDoc(collection(db, "relations"), {
+          type: "partner" as const,
+          first,
+          second,
+          root: form.root,
+        });
+      } else {
+        await addDoc(collection(db, "relations"), {
+          type: "parent" as const,
+          first,
+          second,
+          root: form.root,
+          person: doc(db, "people", form.personId),
+          parentship: form.parentshipId ? doc(db, "relations", form.parentshipId) : null,
+        });
+      }
+
+      setForm(emptyRelationForm());
+      setStatus("saved");
+      revalidator.revalidate();
+    } catch (err) {
+      setStatus("error");
+      setError(err instanceof Error ? err.message : "Nie udało się zapisać relacji.");
+    }
+  };
+
+  return (
+    <Card as="form" onSubmit={handleSubmit}>
+      <CardTitle>Nowa relacja</CardTitle>
+      <CardHint>Zapis do Firestore → relations</CardHint>
+
+      <FieldGrid>
+        <Field $span={2}>
+          <Label htmlFor="relationType">Typ *</Label>
+          <Select id="relationType" value={form.type} onChange={(e) => update("type", e.target.value as "partner" | "parent")}>
+            <option value="partner">partner — związek</option>
+            <option value="parent">parent — dziecko ↔ rodzice / parentship</option>
+          </Select>
+        </Field>
+
+        <Field>
+          <Label htmlFor="firstId">First *</Label>
+          <Select id="firstId" value={form.firstId} onChange={(e) => update("firstId", e.target.value)} required>
+            <option value="">— wybierz osobę —</option>
+            {people.map((person) => (
+              <option key={person.id} value={person.id}>
+                {personLabel(person)}
+              </option>
+            ))}
+          </Select>
+        </Field>
+
+        <Field>
+          <Label htmlFor="secondId">Second</Label>
+          <Select id="secondId" value={form.secondId} onChange={(e) => update("secondId", e.target.value)}>
+            <option value="">— brak —</option>
+            {people.map((person) => (
+              <option key={person.id} value={person.id}>
+                {personLabel(person)}
+              </option>
+            ))}
+          </Select>
+        </Field>
+
+        <Field $span={2}>
+          <CheckboxRow>
+            <input id="root" type="checkbox" checked={form.root} onChange={(e) => update("root", e.target.checked)} />
+            <Label htmlFor="root">Root (punkt startowy drzewa)</Label>
+          </CheckboxRow>
+        </Field>
+      </FieldGrid>
+
+      {form.type === "parent" ? (
+        <>
+          <SectionLabel>Parent</SectionLabel>
+          <FieldGrid>
+            <Field $span={2}>
+              <Label htmlFor="personId">Dziecko (person) *</Label>
+              <Select id="personId" value={form.personId} onChange={(e) => update("personId", e.target.value)} required>
+                <option value="">— wybierz osobę —</option>
+                {people.map((person) => (
+                  <option key={person.id} value={person.id}>
+                    {personLabel(person)}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <Field $span={2}>
+              <Label htmlFor="parentshipId">Parentship (relacja partner)</Label>
+              <Select id="parentshipId" value={form.parentshipId} onChange={(e) => update("parentshipId", e.target.value)}>
+                <option value="">— brak (linie bezpośrednio do first/second) —</option>
+                {partnerRelations.map((relation) => {
+                  const first = people.find((person) => person.id === relation.first.id);
+                  const second = relation.second?.id ? people.find((person) => person.id === relation.second?.id) : null;
+                  const label = [first ? personLabel(first) : relation.first.id, second ? personLabel(second) : null]
+                    .filter(Boolean)
+                    .join(" · ");
+                  return (
+                    <option key={relation.id} value={relation.id}>
+                      {label || relation.id}
+                    </option>
+                  );
+                })}
+              </Select>
+            </Field>
+          </FieldGrid>
+        </>
+      ) : null}
+
+      <Actions>
+        <Submit type="submit" disabled={status === "saving" || people.length === 0}>
+          {status === "saving" ? "Zapisywanie…" : "Dodaj relację"}
+        </Submit>
+        {people.length === 0 ? <Status>Najpierw dodaj osoby.</Status> : null}
+        {status === "saved" ? <Status $ok>Zapisano</Status> : null}
+        {status === "error" && error ? <Status>{error}</Status> : null}
+      </Actions>
+    </Card>
+  );
+}
+
+function RelationList({
+  relations,
+  peopleById,
+}: {
+  relations: Relation[];
+  peopleById: Map<string, Person>;
+}) {
+  const nameOf = (id: string | null | undefined) => {
+    if (!id) return "—";
+    const person = peopleById.get(id);
+    return person ? personLabel(person) : id;
+  };
+
+  return (
+    <Card>
+      <CardTitle>Lista relacji</CardTitle>
+      <CardHint>{relations.length} rekordów</CardHint>
+      {relations.length === 0 ? (
+        <Empty>Brak relacji w kolekcji relations.</Empty>
+      ) : (
+        <List>
+          {relations.map((relation) => (
+            <ListItem key={relation.id}>
+              <ItemTitle>
+                <TypeBadge $type={relation.type}>{relation.type}</TypeBadge>
+                {relation.root ? <RootBadge>root</RootBadge> : null}
+              </ItemTitle>
+              <ItemMeta>
+                first: {nameOf(refId(relation.first))}
+                {" · "}
+                second: {nameOf(refId(relation.second))}
+              </ItemMeta>
+              {relation.type === "parent" ? (
+                <ItemMeta>
+                  person: {nameOf(refId(relation.person))}
+                  {" · "}
+                  parentship: {refId(relation.parentship) ?? "—"}
+                </ItemMeta>
+              ) : null}
             </ListItem>
           ))}
         </List>
@@ -289,9 +533,18 @@ const Subtitle = styled.p`
   font-size: 0.95rem;
 `;
 
-const Layout = styled.div`
+const Section = styled.section`
   max-width: 1100px;
-  margin: 0 auto;
+  margin: 0 auto 2rem;
+`;
+
+const SectionHeading = styled.h2`
+  margin: 0 0 0.85rem;
+  font-size: 1.2rem;
+  font-weight: 500;
+`;
+
+const Layout = styled.div`
   display: grid;
   grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.8fr);
   gap: 1.25rem;
@@ -346,6 +599,25 @@ const Field = styled.div<{ $span?: 1 | 2 }>`
 const Label = styled.label`
   font-size: 0.78rem;
   color: var(--muted);
+`;
+
+const CheckboxRow = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 2.4rem;
+
+  input {
+    width: 1rem;
+    height: 1rem;
+    accent-color: var(--accent);
+  }
+
+  ${Label} {
+    margin: 0;
+    color: var(--ink);
+    font-size: 0.9rem;
+  }
 `;
 
 const inputStyles = `
@@ -428,14 +700,35 @@ const ListItem = styled.li`
   background: #fff;
 `;
 
-const PersonName = styled.div`
+const ItemTitle = styled.div`
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
   font-size: 0.95rem;
 `;
 
-const PersonMeta = styled.div`
-  margin-top: 0.15rem;
+const ItemMeta = styled.div`
+  margin-top: 0.2rem;
   font-size: 0.75rem;
   color: var(--muted);
+`;
+
+const TypeBadge = styled.span<{ $type: "partner" | "parent" }>`
+  display: inline-block;
+  padding: 0.1rem 0.4rem;
+  border: 1px solid var(--line);
+  background: ${({ $type }) => ($type === "partner" ? "#e8efe9" : "#efe8dc")};
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
+`;
+
+const RootBadge = styled.span`
+  display: inline-block;
+  padding: 0.1rem 0.4rem;
+  background: var(--accent);
+  color: #f7f4ef;
+  font-size: 0.72rem;
 `;
 
 const Empty = styled.p`
