@@ -10,8 +10,10 @@ import { Home } from "./views/Home";
 function MainLayout() {
   return (
     <>
-      <Link to="/">Home</Link>
-      <Link to="/dashboard">Dashboard</Link>
+      <nav style={{ position: "fixed", top: 0, left: 0, right: 0, display: "flex", gap: "10px", zIndex: 100 }}>
+        <Link to="/">Home</Link>
+        <Link to="/dashboard">Dashboard</Link>
+      </nav>
       <Outlet />
     </>
   );

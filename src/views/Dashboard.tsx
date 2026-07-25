@@ -1,5 +1,5 @@
-import { addDoc, collection, doc, serverTimestamp } from "firebase/firestore";
-import { useMemo, useState } from "react";
+import { addDoc, collection, doc, serverTimestamp, Timestamp } from "firebase/firestore";
+import { useEffect, useMemo, useState } from "react";
 import { useLoaderData, useRevalidator } from "react-router";
 import styled from "styled-components";
 import type { Person } from "@/entities/person/types";
@@ -109,8 +109,21 @@ function refId(value: { id?: string } | null | undefined) {
 }
 
 export function Dashboard() {
-  const { people, relations } = useLoaderData<{ relations: Relation[]; people: Person[] }>();
+  const loaderData = useLoaderData<{ relations: Relation[]; people: Person[] }>();
+  const revalidator = useRevalidator();
+  const [people, setPeople] = useState(loaderData.people);
+  const [relations, setRelations] = useState(loaderData.relations);
+
+  useEffect(() => {
+    setPeople(loaderData.people);
+    setRelations(loaderData.relations);
+  }, [loaderData]);
+
   const peopleById = useMemo(() => new Map(people.map((person) => [person.id, person])), [people]);
+
+  const refresh = () => {
+    void revalidator.revalidate();
+  };
 
   return (
     <Page>
@@ -122,7 +135,12 @@ export function Dashboard() {
       <Section>
         <SectionHeading>Osoby</SectionHeading>
         <Layout>
-          <PersonForm />
+          <PersonForm
+            onCreated={(person) => {
+              setPeople((prev) => [...prev, person]);
+              refresh();
+            }}
+          />
           <PersonList people={people} />
         </Layout>
       </Section>
@@ -130,7 +148,14 @@ export function Dashboard() {
       <Section>
         <SectionHeading>Relacje</SectionHeading>
         <Layout>
-          <RelationForm people={people} relations={relations} />
+          <RelationForm
+            people={people}
+            relations={relations}
+            onCreated={(relation) => {
+              setRelations((prev) => [...prev, relation]);
+              refresh();
+            }}
+          />
           <RelationList relations={relations} peopleById={peopleById} />
         </Layout>
       </Section>
@@ -138,8 +163,7 @@ export function Dashboard() {
   );
 }
 
-function PersonForm() {
-  const revalidator = useRevalidator();
+function PersonForm({ onCreated }: { onCreated: (person: Person) => void }) {
   const [form, setForm] = useState<PersonFormValues>(emptyPersonForm);
   const [status, setStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [error, setError] = useState<string | null>(null);
@@ -163,10 +187,27 @@ function PersonForm() {
     setStatus("saving");
     setError(null);
     try {
-      await addDoc(collection(db, "people"), toPersonPayload(form));
+      const payload = toPersonPayload(form);
+      const ref = await addDoc(collection(db, "people"), payload);
+      onCreated({
+        id: ref.id,
+        biography: payload.biography,
+        firstName: payload.firstName,
+        lastName: payload.lastName,
+        middleNames: payload.middleNames,
+        birth: payload.birth as Person["birth"],
+        birthPlace: payload.birthPlace,
+        birthSurname: payload.birthSurname,
+        death: payload.death as Person["death"],
+        deathPlace: payload.deathPlace,
+        father: null,
+        mother: null,
+        photoUrl: payload.photoUrl,
+        sex: payload.sex,
+        createdAt: Timestamp.now(),
+      });
       setForm(emptyPersonForm());
       setStatus("saved");
-      revalidator.revalidate();
     } catch (err) {
       setStatus("error");
       setError(err instanceof Error ? err.message : "Nie udało się zapisać osoby.");
@@ -295,13 +336,35 @@ function PersonList({ people }: { people: Person[] }) {
   );
 }
 
-function RelationForm({ people, relations }: { people: Person[]; relations: Relation[] }) {
-  const revalidator = useRevalidator();
+function RelationForm({
+  people,
+  relations,
+  onCreated,
+}: {
+  people: Person[];
+  relations: Relation[];
+  onCreated: (relation: Relation) => void;
+}) {
   const [form, setForm] = useState<RelationFormValues>(emptyRelationForm);
   const [status, setStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [error, setError] = useState<string | null>(null);
 
   const partnerRelations = useMemo(() => relations.filter((relation) => relation.type === "partner"), [relations]);
+
+  const matchedParentshipId = useMemo(() => {
+    if (!form.firstId || !form.secondId) return "";
+    const match = partnerRelations.find((relation) => {
+      const a = relation.first.id;
+      const b = relation.second?.id;
+      return (a === form.firstId && b === form.secondId) || (a === form.secondId && b === form.firstId);
+    });
+    return match?.id ?? "";
+  }, [form.firstId, form.secondId, partnerRelations]);
+
+  useEffect(() => {
+    if (form.type !== "parent") return;
+    setForm((prev) => (prev.parentshipId === matchedParentshipId ? prev : { ...prev, parentshipId: matchedParentshipId }));
+  }, [form.type, matchedParentshipId]);
 
   const update = <K extends keyof RelationFormValues>(key: K, value: RelationFormValues[K]) => {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -334,26 +397,43 @@ function RelationForm({ people, relations }: { people: Person[]; relations: Rela
       const second = form.secondId ? doc(db, "people", form.secondId) : null;
 
       if (form.type === "partner") {
-        await addDoc(collection(db, "relations"), {
+        const ref = await addDoc(collection(db, "relations"), {
           type: "partner" as const,
           first,
           second,
           root: form.root,
         });
+        onCreated({
+          id: ref.id,
+          type: "partner",
+          first,
+          second,
+          root: form.root,
+        });
       } else {
-        await addDoc(collection(db, "relations"), {
+        const parentship = form.parentshipId ? doc(db, "relations", form.parentshipId) : null;
+        const person = doc(db, "people", form.personId);
+        const ref = await addDoc(collection(db, "relations"), {
           type: "parent" as const,
           first,
           second,
           root: form.root,
-          person: doc(db, "people", form.personId),
-          parentship: form.parentshipId ? doc(db, "relations", form.parentshipId) : null,
+          person,
+          parentship,
+        });
+        onCreated({
+          id: ref.id,
+          type: "parent",
+          first,
+          second,
+          root: form.root,
+          person,
+          parentship,
         });
       }
 
       setForm(emptyRelationForm());
       setStatus("saved");
-      revalidator.revalidate();
     } catch (err) {
       setStatus("error");
       setError(err instanceof Error ? err.message : "Nie udało się zapisać relacji.");
@@ -438,6 +518,11 @@ function RelationForm({ people, relations }: { people: Person[]; relations: Rela
                   );
                 })}
               </Select>
+              <CardHint>
+                {matchedParentshipId
+                  ? "Dopasowano automatycznie na podstawie first + second."
+                  : "Wybierz first i second, aby spróbować dopasować parentship."}
+              </CardHint>
             </Field>
           </FieldGrid>
         </>
