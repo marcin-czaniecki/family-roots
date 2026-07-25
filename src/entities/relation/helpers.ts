@@ -26,10 +26,7 @@ export function childrenOf(relations: Relation[], partnerRel: PartnerRelation): 
 }
 
 export function partnersOf(relations: Relation[], personId: string, excludeRelationId?: string): PartnerRelation[] {
-  return relations.filter(
-    (r): r is PartnerRelation =>
-      isPartner(r) && r.id !== excludeRelationId && (r.first.id === personId || r.second?.id === personId),
-  );
+  return relations.filter((r): r is PartnerRelation => isPartner(r) && r.id !== excludeRelationId && (r.first.id === personId || r.second?.id === personId));
 }
 
 export function partnerOf(relations: Relation[], personId: string, excludeRelationId?: string) {

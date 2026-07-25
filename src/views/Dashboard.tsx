@@ -228,12 +228,7 @@ function PersonForm({ onCreated }: { onCreated: (person: Person) => void }) {
         </Field>
         <Field $span={2}>
           <Label htmlFor="middleNames">Drugie imiona</Label>
-          <Input
-            id="middleNames"
-            placeholder="oddzielone przecinkami"
-            value={form.middleNames}
-            onChange={(e) => update("middleNames", e.target.value)}
-          />
+          <Input id="middleNames" placeholder="oddzielone przecinkami" value={form.middleNames} onChange={(e) => update("middleNames", e.target.value)} />
         </Field>
         <Field>
           <Label htmlFor="birthSurname">Nazwisko rodowe</Label>
@@ -321,12 +316,7 @@ function PersonList({ people }: { people: Person[] }) {
         {filtered.length}
         {query.trim() ? ` z ${people.length}` : ""} rekordów
       </CardHint>
-      <ListSearch
-        type="search"
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        placeholder="Filtruj listę (imię, data, id)…"
-      />
+      <ListSearch type="search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Filtruj listę (imię, data, id)…" />
       {people.length === 0 ? (
         <Empty>Brak osób w kolekcji people.</Empty>
       ) : filtered.length === 0 ? (
@@ -342,9 +332,7 @@ function PersonList({ people }: { people: Person[] }) {
                   {" — "}
                   <PersonHint>{hint.text}</PersonHint>
                 </ItemTitle>
-                <ItemMeta>
-                  {[person.birthPlace, person.deathPlace ? `† ${person.deathPlace}` : null].filter(Boolean).join(" · ") || "—"}
-                </ItemMeta>
+                <ItemMeta>{[person.birthPlace, person.deathPlace ? `† ${person.deathPlace}` : null].filter(Boolean).join(" · ") || "—"}</ItemMeta>
               </ListItem>
             );
           })}
@@ -354,15 +342,7 @@ function PersonList({ people }: { people: Person[] }) {
   );
 }
 
-function RelationForm({
-  people,
-  relations,
-  onCreated,
-}: {
-  people: Person[];
-  relations: Relation[];
-  onCreated: (relation: Relation) => void;
-}) {
+function RelationForm({ people, relations, onCreated }: { people: Person[]; relations: Relation[]; onCreated: (relation: Relation) => void }) {
   const [form, setForm] = useState<RelationFormValues>(emptyRelationForm);
   const [status, setStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [error, setError] = useState<string | null>(null);
@@ -527,9 +507,7 @@ function RelationForm({
                 {partnerRelations.map((relation) => {
                   const first = people.find((person) => person.id === relation.first.id);
                   const second = relation.second?.id ? people.find((person) => person.id === relation.second?.id) : null;
-                  const label = [first ? personLabel(first) : relation.first.id, second ? personLabel(second) : null]
-                    .filter(Boolean)
-                    .join(" · ");
+                  const label = [first ? personLabel(first) : relation.first.id, second ? personLabel(second) : null].filter(Boolean).join(" · ");
                   return (
                     <option key={relation.id} value={relation.id}>
                       {label || relation.id}
@@ -538,9 +516,7 @@ function RelationForm({
                 })}
               </Select>
               <CardHint>
-                {matchedParentshipId
-                  ? "Dopasowano automatycznie na podstawie first + second."
-                  : "Wybierz first i second, aby spróbować dopasować parentship."}
+                {matchedParentshipId ? "Dopasowano automatycznie na podstawie first + second." : "Wybierz first i second, aby spróbować dopasować parentship."}
               </CardHint>
             </Field>
           </FieldGrid>
@@ -559,13 +535,7 @@ function RelationForm({
   );
 }
 
-function RelationList({
-  relations,
-  peopleById,
-}: {
-  relations: Relation[];
-  peopleById: Map<string, Person>;
-}) {
+function RelationList({ relations, peopleById }: { relations: Relation[]; peopleById: Map<string, Person> }) {
   const personRefLabel = (id: string | null | undefined) => {
     if (!id) return "—";
     const person = peopleById.get(id);

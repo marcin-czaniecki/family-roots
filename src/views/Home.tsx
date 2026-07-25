@@ -16,10 +16,7 @@ export function Home() {
   const { nodes, edges: initialEdges } = useLoaderData<GenealogyLoaderData>();
   const [edges, setEdges] = useState<Edge[]>(initialEdges);
 
-  const onConnect = useCallback(
-    (params: Connection) => setEdges((edgesSnapshot) => addEdge({ ...params, type: "descent" }, edgesSnapshot)),
-    [],
-  );
+  const onConnect = useCallback((params: Connection) => setEdges((edgesSnapshot) => addEdge({ ...params, type: "descent" }, edgesSnapshot)), []);
 
   return (
     <div style={{ width: "100vw", height: "100vh", background: "#f3efe8" }}>

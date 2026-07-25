@@ -56,8 +56,7 @@ function partnershipBlockWidth(relations: Relation[], partnerRel: PartnerRelatio
   const own = coupleWidth(partnerRel);
   if (kids.length === 0) return own;
 
-  const kidsW =
-    kids.reduce((sum, k) => sum + subtreeWidth(relations, k.person.id, partnerRel.id), 0) + GAP * Math.max(0, kids.length - 1);
+  const kidsW = kids.reduce((sum, k) => sum + subtreeWidth(relations, k.person.id, partnerRel.id), 0) + GAP * Math.max(0, kids.length - 1);
   return Math.max(own, kidsW);
 }
 
@@ -72,13 +71,7 @@ function subtreeWidth(relations: Relation[], personId: string, fromPartnershipId
 }
 
 /** Reuses person.id on first placement; later marriages get a duplicate card. */
-function upsertPersonNode(
-  nodes: Node[],
-  placedPeople: Set<string>,
-  person: Person,
-  position: { x: number; y: number },
-  partnerRelId?: string,
-): string {
+function upsertPersonNode(nodes: Node[], placedPeople: Set<string>, person: Person, position: { x: number; y: number }, partnerRelId?: string): string {
   const nodeId = placedPeople.has(person.id) && partnerRelId ? `${person.id}~${partnerRelId}` : person.id;
 
   const existing = nodes.find((node) => node.id === nodeId);
@@ -187,8 +180,7 @@ async function placePartnership(
   const centerKids = kidsWithPeople.filter((k) => k.side === "center").sort(byBirth);
   const rightKids = kidsWithPeople.filter((k) => k.side === "right").sort(byBirth);
 
-  const groupWidth = (group: typeof kidsWithPeople) =>
-    group.length === 0 ? 0 : group.reduce((sum, k) => sum + k.width, 0) + GAP * (group.length - 1);
+  const groupWidth = (group: typeof kidsWithPeople) => (group.length === 0 ? 0 : group.reduce((sum, k) => sum + k.width, 0) + GAP * (group.length - 1));
 
   const leftW = groupWidth(leftKids);
   const centerW = groupWidth(centerKids);
@@ -209,17 +201,7 @@ async function placePartnership(
         let partnerCursor = slotLeft;
         for (const ownPartner of ownPartners) {
           const blockW = partnershipBlockWidth(relations, ownPartner);
-          await placePartnership(
-            relations,
-            ownPartner,
-            partnerCursor + blockW / 2,
-            childY,
-            nodes,
-            edges,
-            placedPeople,
-            placedRelations,
-            child.person.id,
-          );
+          await placePartnership(relations, ownPartner, partnerCursor + blockW / 2, childY, nodes, edges, placedPeople, placedRelations, child.person.id);
           partnerCursor += blockW + MULTI_PARTNER_GAP;
         }
       } else {
