@@ -1,0 +1,28 @@
+---
+description: Rafałowscy genealogy client — project context for the AI
+alwaysApply: true
+---
+
+# Project
+
+Family genealogy app (Rafałowscy): React Flow tree + Firestore dashboard.
+
+Read `AGENTS.md` for domain model, routes, and layout rules before larger changes.
+
+## Hotspots
+
+- Tree layout: `src/features/genealogyLayout.ts`
+- Relation helpers: `src/entities/relation/helpers.ts`
+- Views: `src/views/Home.tsx` (graph), `src/views/Dashboard.tsx` (CRUD)
+
+## Layout intents
+
+- Multi-partner: 1st partner right, 2nd left; one shared person card
+- Children of left couple → left; children of right couple → right
+- No overlapping sibling / partner / child cards
+
+## Conventions
+
+- Code & commits in English; UI may be Polish
+- Match existing styled-components / entity patterns
+- Lint with Biome (`npm run lint`)
