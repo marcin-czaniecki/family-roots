@@ -1,11 +1,11 @@
-import { Background, type Edge, type Node, type OnConnectEnd, Panel, ReactFlow } from "@xyflow/react";
+import { Background, type Edge, type Node, type OnConnectEnd, Panel, ReactFlow, useReactFlow } from "@xyflow/react";
 import { collection, doc, serverTimestamp, writeBatch } from "firebase/firestore";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLoaderData, useRevalidator } from "react-router";
 import styled from "styled-components";
 import { FitToTop } from "@/components/FitToTop";
 import { PersonSearchSelect } from "@/components/PersonSearchSelect";
-import { personName } from "@/entities/person/label";
+import { matchesPersonQuery, personDatesOrId, personName } from "@/entities/person/label";
 import type { Person } from "@/entities/person/types";
 import type { PartnerRelation, Relation } from "@/entities/relation/types";
 import { buildGenealogyGraph, edgeTypes, nodeTypes } from "@/features/genealogyLayout";
@@ -37,6 +37,8 @@ type NewPersonValues = {
   photoUrl: string;
   sex: "female" | "male";
 };
+
+const SEARCH_PAGE_SIZE = 6;
 
 const emptyNewPerson = (): NewPersonValues => ({
   biography: "",
@@ -276,6 +278,7 @@ export function Home() {
       >
         <FitToTop ready={graph.nodes.length > 0} />
         <Background color="#d5cbb8" gap={28} size={1} />
+        <DiagramPersonSearch nodes={graph.nodes} />
         <Panel position="bottom-left">
           <ModeControl className="nodrag nopan">
             <ModeInput
@@ -338,6 +341,116 @@ export function Home() {
   );
 }
 
+function DiagramPersonSearch({ nodes }: { nodes: Node[] }) {
+  const { getNode, setCenter } = useReactFlow();
+  const [query, setQuery] = useState("");
+  const [page, setPage] = useState(0);
+
+  const results = useMemo(() => {
+    if (!query.trim()) return [];
+
+    const peopleById = new Map<string, { nodeId: string; person: Person }>();
+    for (const node of nodes) {
+      if (node.type !== "person") continue;
+      const person = node.data as unknown as Person;
+      if (!person.id) continue;
+      const current = peopleById.get(person.id);
+      if (!current || node.id === person.id) peopleById.set(person.id, { nodeId: node.id, person });
+    }
+
+    return [...peopleById.values()]
+      .filter(({ person }) => matchesPersonQuery(person, query))
+      .sort(({ person: first }, { person: second }) => personName(first).localeCompare(personName(second), "pl"));
+  }, [nodes, query]);
+
+  const totalPages = Math.ceil(results.length / SEARCH_PAGE_SIZE);
+  const currentPage = Math.min(page, Math.max(0, totalPages - 1));
+  const visibleResults = results.slice(currentPage * SEARCH_PAGE_SIZE, (currentPage + 1) * SEARCH_PAGE_SIZE);
+
+  const centerPerson = (nodeId: string) => {
+    const node = getNode(nodeId);
+    if (!node) return;
+    const width = node.measured?.width ?? node.width ?? 360;
+    const height = node.measured?.height ?? node.height ?? 240;
+    setCenter(node.position.x + width / 2, node.position.y + height / 2, { duration: 450, zoom: 1 });
+  };
+
+  return (
+    <Panel position="top-left">
+      <DiagramSearchPanel className="nodrag nopan nowheel">
+        <DiagramSearchRow>
+          <DiagramSearchInput
+            type="search"
+            value={query}
+            placeholder="Szukaj osoby w drzewie"
+            aria-label="Szukaj osoby w drzewie"
+            onChange={(event) => {
+              setQuery(event.target.value);
+              setPage(0);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && visibleResults[0]) {
+                event.preventDefault();
+                centerPerson(visibleResults[0].nodeId);
+              }
+            }}
+          />
+          {query ? (
+            <DiagramClearButton type="button" aria-label="Wyczyść wyszukiwanie" title="Wyczyść" onClick={() => setQuery("")}>
+              ×
+            </DiagramClearButton>
+          ) : null}
+        </DiagramSearchRow>
+
+        {query.trim() ? (
+          <DiagramResults aria-live="polite">
+            <DiagramResultCount>{results.length === 1 ? "1 wynik" : `${results.length} wyników`}</DiagramResultCount>
+            {visibleResults.length ? (
+              <DiagramResultList>
+                {visibleResults.map(({ nodeId, person }) => (
+                  <li key={person.id}>
+                    <DiagramResultButton type="button" onClick={() => centerPerson(nodeId)}>
+                      <DiagramResultName>{personName(person)}</DiagramResultName>
+                      <DiagramResultHint>{personDatesOrId(person).text}</DiagramResultHint>
+                    </DiagramResultButton>
+                  </li>
+                ))}
+              </DiagramResultList>
+            ) : (
+              <DiagramSearchEmpty>Brak dopasowanych osób</DiagramSearchEmpty>
+            )}
+
+            {totalPages > 1 ? (
+              <DiagramPagination aria-label="Strony wyników wyszukiwania">
+                <DiagramPageButton
+                  type="button"
+                  aria-label="Poprzednia strona"
+                  title="Poprzednia strona"
+                  disabled={currentPage === 0}
+                  onClick={() => setPage((current) => Math.max(0, current - 1))}
+                >
+                  ‹
+                </DiagramPageButton>
+                <DiagramPageStatus>
+                  {currentPage + 1} / {totalPages}
+                </DiagramPageStatus>
+                <DiagramPageButton
+                  type="button"
+                  aria-label="Następna strona"
+                  title="Następna strona"
+                  disabled={currentPage === totalPages - 1}
+                  onClick={() => setPage((current) => Math.min(totalPages - 1, current + 1))}
+                >
+                  ›
+                </DiagramPageButton>
+              </DiagramPagination>
+            ) : null}
+          </DiagramResults>
+        ) : null}
+      </DiagramSearchPanel>
+    </Panel>
+  );
+}
 function RelationEditor({
   draft,
   people,
@@ -610,6 +723,161 @@ const Canvas = styled.div`
   background: #f3efe8;
 `;
 
+const DiagramSearchPanel = styled.section`
+  --ink: #1c2a22;
+  --muted: #5c6b62;
+  --line: #c5b8a4;
+  --accent: #3d5a4c;
+
+  width: min(22rem, calc(100vw - 2rem));
+  margin-top: 1.75rem;
+  border: 1px solid var(--line);
+  background: #f7f4ef;
+  color: var(--ink);
+  box-shadow: 0 5px 18px rgba(28, 42, 34, 0.14);
+`;
+
+const DiagramSearchRow = styled.div`
+  position: relative;
+  display: flex;
+  align-items: center;
+`;
+
+const DiagramSearchInput = styled.input`
+  box-sizing: border-box;
+  width: 100%;
+  border: none;
+  background: #fff;
+  color: var(--ink);
+  padding: 0.75rem 2.5rem 0.75rem 0.85rem;
+  font: inherit;
+  font-size: 1rem;
+  outline: none;
+
+  &:focus {
+    box-shadow: inset 0 0 0 2px var(--accent);
+  }
+`;
+
+const DiagramClearButton = styled.button`
+  position: absolute;
+  right: 0.45rem;
+  width: 2rem;
+  height: 2rem;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 1.35rem;
+  line-height: 1;
+  cursor: pointer;
+
+  &:hover {
+    color: var(--ink);
+  }
+`;
+
+const DiagramResults = styled.div`
+  border-top: 1px solid var(--line);
+`;
+
+const DiagramResultCount = styled.div`
+  padding: 0.5rem 0.75rem;
+  color: var(--muted);
+  font-size: 0.76rem;
+`;
+
+const DiagramResultList = styled.ul`
+  margin: 0;
+  padding: 0;
+  list-style: none;
+`;
+
+const DiagramResultButton = styled.button`
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  width: 100%;
+  min-height: 2.8rem;
+  border: none;
+  border-top: 1px solid #ded6ca;
+  background: #fff;
+  color: var(--ink);
+  padding: 0.55rem 0.75rem;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+
+  &:hover,
+  &:focus-visible {
+    background: #e8efe9;
+    outline: none;
+  }
+`;
+
+const DiagramResultName = styled.span`
+  min-width: 0;
+  overflow: hidden;
+  font-size: 0.9rem;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+`;
+
+const DiagramResultHint = styled.span`
+  flex: none;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+`;
+
+const DiagramSearchEmpty = styled.div`
+  border-top: 1px solid #ded6ca;
+  padding: 0.75rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+`;
+
+const DiagramPagination = styled.nav`
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.65rem;
+  border-top: 1px solid var(--line);
+  padding: 0.5rem;
+`;
+
+const DiagramPageButton = styled.button`
+  width: 2rem;
+  height: 2rem;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+  font-size: 1.25rem;
+  line-height: 1;
+  cursor: pointer;
+
+  &:hover:not(:disabled),
+  &:focus-visible {
+    border-color: var(--accent);
+    outline: none;
+  }
+
+  &:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+`;
+
+const DiagramPageStatus = styled.span`
+  min-width: 3.5rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+`;
 const ModeInput = styled.input`
   position: absolute;
   width: 1px;
