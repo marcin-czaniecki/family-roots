@@ -574,7 +574,7 @@ async function placePartnership(
     id: partnerRel.id,
     type: "relation",
     position: { x: relationX, y: relationY },
-    data: {},
+    data: { root: partnerRel.root },
     draggable: true,
   });
 

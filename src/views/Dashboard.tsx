@@ -1,4 +1,4 @@
-import { addDoc, collection, doc, serverTimestamp, Timestamp } from "firebase/firestore";
+import { addDoc, collection, doc, serverTimestamp, Timestamp, writeBatch } from "firebase/firestore";
 import { useEffect, useMemo, useState } from "react";
 import { useLoaderData, useRevalidator } from "react-router";
 import styled from "styled-components";
@@ -139,7 +139,23 @@ export function Dashboard() {
               refresh();
             }}
           />
-          <PersonList people={people} />
+          <PersonList
+            people={people}
+            relations={relations}
+            onDeleted={(personId, nextRelations) => {
+              setPeople((prev) =>
+                prev
+                  .filter((person) => person.id !== personId)
+                  .map((person) => ({
+                    ...person,
+                    father: person.father?.id === personId ? null : person.father,
+                    mother: person.mother?.id === personId ? null : person.mother,
+                  })),
+              );
+              setRelations(nextRelations);
+              refresh();
+            }}
+          />
         </Layout>
       </Section>
 
@@ -154,7 +170,14 @@ export function Dashboard() {
               refresh();
             }}
           />
-          <RelationList relations={relations} peopleById={peopleById} />
+          <RelationList
+            relations={relations}
+            peopleById={peopleById}
+            onDeleted={(nextRelations) => {
+              setRelations(nextRelations);
+              refresh();
+            }}
+          />
         </Layout>
       </Section>
     </Page>
@@ -305,9 +328,112 @@ function PersonForm({ onCreated }: { onCreated: (person: Person) => void }) {
   );
 }
 
-function PersonList({ people }: { people: Person[] }) {
+function PersonList({
+  people,
+  relations,
+  onDeleted,
+}: {
+  people: Person[];
+  relations: Relation[];
+  onDeleted: (personId: string, nextRelations: Relation[]) => void;
+}) {
   const [query, setQuery] = useState("");
+  const [deletingPersonId, setDeletingPersonId] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const filtered = useMemo(() => people.filter((person) => matchesPersonQuery(person, query)), [people, query]);
+
+  const handleDelete = async (person: Person) => {
+    const deletedPartnerIds = new Set(
+      relations
+        .filter((relation) => relation.type === "partner" && (refId(relation.first) === person.id || refId(relation.second) === person.id))
+        .map((relation) => relation.id),
+    );
+    const deletedRelationIds = new Set<string>();
+    const updatedRelations = new Map<string, Relation>();
+
+    for (const relation of relations) {
+      if (relation.type === "partner") {
+        if (deletedPartnerIds.has(relation.id)) deletedRelationIds.add(relation.id);
+        continue;
+      }
+
+      if (refId(relation.person) === person.id) {
+        deletedRelationIds.add(relation.id);
+        continue;
+      }
+
+      const firstDeleted = refId(relation.first) === person.id;
+      const secondDeleted = refId(relation.second) === person.id;
+      const parentshipDeleted = deletedPartnerIds.has(refId(relation.parentship) ?? "");
+
+      if (firstDeleted) {
+        const remainingParent = relation.second && refId(relation.second) !== person.id ? relation.second : null;
+        if (!remainingParent) {
+          deletedRelationIds.add(relation.id);
+          continue;
+        }
+        updatedRelations.set(relation.id, {
+          ...relation,
+          first: remainingParent,
+          second: null,
+          parentship: null,
+        });
+      } else if (secondDeleted || parentshipDeleted) {
+        updatedRelations.set(relation.id, {
+          ...relation,
+          ...(secondDeleted ? { second: null } : {}),
+          parentship: null,
+        });
+      }
+    }
+
+    const clearedParentLinks = people.filter(
+      (otherPerson) => otherPerson.id !== person.id && (otherPerson.father?.id === person.id || otherPerson.mother?.id === person.id),
+    );
+    const details = [
+      `Relacje do usunięcia: ${deletedRelationIds.size}.`,
+      `Relacje do aktualizacji: ${updatedRelations.size}.`,
+      `Pola rodziców do wyczyszczenia: ${clearedParentLinks.length}.`,
+    ].join("\n");
+
+    if (!window.confirm(`Usunąć osobę „${personName(person)}”?\n\n${details}\n\nTej operacji nie można cofnąć.`)) return;
+
+    setDeletingPersonId(person.id);
+    setDeleteError(null);
+
+    try {
+      const batch = writeBatch(db);
+      for (const relationId of deletedRelationIds) {
+        batch.delete(doc(db, "relations", relationId));
+      }
+      for (const relation of updatedRelations.values()) {
+        if (relation.type !== "parent") continue;
+        batch.update(doc(db, "relations", relation.id), {
+          first: relation.first,
+          second: relation.second ?? null,
+          parentship: relation.parentship ?? null,
+        });
+      }
+      for (const otherPerson of clearedParentLinks) {
+        batch.update(doc(db, "people", otherPerson.id), {
+          ...(otherPerson.father?.id === person.id ? { father: null } : {}),
+          ...(otherPerson.mother?.id === person.id ? { mother: null } : {}),
+          updateAt: serverTimestamp(),
+        });
+      }
+      batch.delete(doc(db, "people", person.id));
+      await batch.commit();
+
+      onDeleted(
+        person.id,
+        relations.filter((relation) => !deletedRelationIds.has(relation.id)).map((relation) => updatedRelations.get(relation.id) ?? relation),
+      );
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : "Nie udało się usunąć osoby.");
+    } finally {
+      setDeletingPersonId(null);
+    }
+  };
 
   return (
     <Card>
@@ -317,6 +443,7 @@ function PersonList({ people }: { people: Person[] }) {
         {query.trim() ? ` z ${people.length}` : ""} rekordów
       </CardHint>
       <ListSearch type="search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Filtruj listę (imię, data, id)…" />
+      {deleteError ? <DeleteStatus>{deleteError}</DeleteStatus> : null}
       {people.length === 0 ? (
         <Empty>Brak osób w kolekcji people.</Empty>
       ) : filtered.length === 0 ? (
@@ -327,12 +454,24 @@ function PersonList({ people }: { people: Person[] }) {
             const hint = personDatesOrId(person);
             return (
               <ListItem key={person.id}>
-                <ItemTitle>
-                  {personName(person)}
-                  {" — "}
-                  <PersonHint>{hint.text}</PersonHint>
-                </ItemTitle>
-                <ItemMeta>{[person.birthPlace, person.deathPlace ? `† ${person.deathPlace}` : null].filter(Boolean).join(" · ") || "—"}</ItemMeta>
+                <ListItemRow>
+                  <ListItemContent>
+                    <ItemTitle>
+                      {personName(person)}
+                      {" — "}
+                      <PersonHint>{hint.text}</PersonHint>
+                    </ItemTitle>
+                    <ItemMeta>{[person.birthPlace, person.deathPlace ? `† ${person.deathPlace}` : null].filter(Boolean).join(" · ") || "—"}</ItemMeta>
+                  </ListItemContent>
+                  <DeleteButton
+                    type="button"
+                    disabled={deletingPersonId !== null}
+                    onClick={() => void handleDelete(person)}
+                    aria-label={`Usuń osobę ${personName(person)}`}
+                  >
+                    {deletingPersonId === person.id ? "Usuwanie…" : "Usuń"}
+                  </DeleteButton>
+                </ListItemRow>
               </ListItem>
             );
           })}
@@ -341,7 +480,6 @@ function PersonList({ people }: { people: Person[] }) {
     </Card>
   );
 }
-
 function RelationForm({ people, relations, onCreated }: { people: Person[]; relations: Relation[]; onCreated: (relation: Relation) => void }) {
   const [form, setForm] = useState<RelationFormValues>(emptyRelationForm);
   const [status, setStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
@@ -535,7 +673,18 @@ function RelationForm({ people, relations, onCreated }: { people: Person[]; rela
   );
 }
 
-function RelationList({ relations, peopleById }: { relations: Relation[]; peopleById: Map<string, Person> }) {
+function RelationList({
+  relations,
+  peopleById,
+  onDeleted,
+}: {
+  relations: Relation[];
+  peopleById: Map<string, Person>;
+  onDeleted: (nextRelations: Relation[]) => void;
+}) {
+  const [deletingRelationId, setDeletingRelationId] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
   const personRefLabel = (id: string | null | undefined) => {
     if (!id) return "—";
     const person = peopleById.get(id);
@@ -550,32 +699,77 @@ function RelationList({ relations, peopleById }: { relations: Relation[]; people
     );
   };
 
+  const handleDelete = async (relation: Relation) => {
+    const dependentParents =
+      relation.type === "partner" ? relations.filter((candidate) => candidate.type === "parent" && refId(candidate.parentship) === relation.id) : [];
+    const rootWarning = relation.root ? "\n\nUwaga: to relacja root. Po jej usunięciu trzeba wskazać nowy punkt startowy drzewa." : "";
+    const dependentSummary = dependentParents.length > 0 ? `\nPowiązania parentship do wyczyszczenia: ${dependentParents.length}.` : "";
+
+    if (!window.confirm(`Usunąć relację „${relation.type}”?${dependentSummary}${rootWarning}\n\nTej operacji nie można cofnąć.`)) return;
+
+    setDeletingRelationId(relation.id);
+    setDeleteError(null);
+
+    try {
+      const batch = writeBatch(db);
+      for (const dependent of dependentParents) {
+        batch.update(doc(db, "relations", dependent.id), { parentship: null });
+      }
+      batch.delete(doc(db, "relations", relation.id));
+      await batch.commit();
+
+      const dependentIds = new Set(dependentParents.map((dependent) => dependent.id));
+      onDeleted(
+        relations
+          .filter((candidate) => candidate.id !== relation.id)
+          .map((candidate) => (candidate.type === "parent" && dependentIds.has(candidate.id) ? { ...candidate, parentship: null } : candidate)),
+      );
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : "Nie udało się usunąć relacji.");
+    } finally {
+      setDeletingRelationId(null);
+    }
+  };
+
   return (
     <Card>
       <CardTitle>Lista relacji</CardTitle>
       <CardHint>{relations.length} rekordów</CardHint>
+      {deleteError ? <DeleteStatus>{deleteError}</DeleteStatus> : null}
       {relations.length === 0 ? (
         <Empty>Brak relacji w kolekcji relations.</Empty>
       ) : (
         <List>
           {relations.map((relation) => (
             <ListItem key={relation.id}>
-              <ItemTitle>
-                <TypeBadge $type={relation.type}>{relation.type}</TypeBadge>
-                {relation.root ? <RootBadge>root</RootBadge> : null}
-              </ItemTitle>
-              <ItemMeta>
-                first: {personRefLabel(refId(relation.first))}
-                {" · "}
-                second: {personRefLabel(refId(relation.second))}
-              </ItemMeta>
-              {relation.type === "parent" ? (
-                <ItemMeta>
-                  person: {personRefLabel(refId(relation.person))}
-                  {" · "}
-                  parentship: {refId(relation.parentship) ?? "—"}
-                </ItemMeta>
-              ) : null}
+              <ListItemRow>
+                <ListItemContent>
+                  <ItemTitle>
+                    <TypeBadge $type={relation.type}>{relation.type}</TypeBadge>
+                    {relation.root ? <RootBadge>root</RootBadge> : null}
+                  </ItemTitle>
+                  <ItemMeta>
+                    first: {personRefLabel(refId(relation.first))}
+                    {" · "}
+                    second: {personRefLabel(refId(relation.second))}
+                  </ItemMeta>
+                  {relation.type === "parent" ? (
+                    <ItemMeta>
+                      person: {personRefLabel(refId(relation.person))}
+                      {" · "}
+                      parentship: {refId(relation.parentship) ?? "—"}
+                    </ItemMeta>
+                  ) : null}
+                </ListItemContent>
+                <DeleteButton
+                  type="button"
+                  disabled={deletingRelationId !== null}
+                  onClick={() => void handleDelete(relation)}
+                  aria-label={`Usuń relację ${relation.type}`}
+                >
+                  {deletingRelationId === relation.id ? "Usuwanie…" : "Usuń"}
+                </DeleteButton>
+              </ListItemRow>
             </ListItem>
           ))}
         </List>
@@ -583,7 +777,6 @@ function RelationList({ relations, peopleById }: { relations: Relation[]; people
     </Card>
   );
 }
-
 const Page = styled.div`
   --ink: #1c2a22;
   --muted: #5c6b62;
@@ -785,6 +978,52 @@ const ListItem = styled.li`
   padding: 0.65rem 0.75rem;
   border: 1px solid var(--line);
   background: #fff;
+`;
+
+const ListItemRow = styled.div`
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.75rem;
+`;
+
+const ListItemContent = styled.div`
+  min-width: 0;
+`;
+
+const DeleteButton = styled.button`
+  border: 1px solid #a95747;
+  background: #fff;
+  color: #8b3a2a;
+  padding: 0.4rem 0.6rem;
+  font: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease,
+    opacity 0.15s ease;
+
+  &:hover:not(:disabled) {
+    background: #8b3a2a;
+    color: #fff;
+  }
+
+  &:focus-visible {
+    outline: 2px solid #8b3a2a;
+    outline-offset: 2px;
+  }
+
+  &:disabled {
+    opacity: 0.55;
+    cursor: default;
+  }
+`;
+
+const DeleteStatus = styled.p`
+  margin: 0 0 0.75rem;
+  color: #8b3a2a;
+  font-size: 0.82rem;
 `;
 
 const ItemTitle = styled.div`
