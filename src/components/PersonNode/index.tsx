@@ -22,16 +22,17 @@ const Card = styled.article<{ $sex: Sex; $growsUp: boolean }>`
   --paper: #f7f4ef;
   --line: #c5b8a4;
   --accent: ${({ $sex }) => ($sex ? "#3d5a4c" : "#6b4f3a")};
-  --photo-fallbacks: #dfe6e1;
+
   --enter-y: ${({ $growsUp }) => ($growsUp ? "-4px" : "4px")};
 
+  position: relative;
   box-sizing: border-box;
-  width: 168px;
-  height: 268px;
+  width: 360px;
+  height: 240px;
   display: flex;
   flex-direction: column;
   padding: 0;
-  overflow: hidden;
+  overflow: visible;
   background: var(--paper);
   border: 1px solid var(--line);
   ${({ $growsUp }) =>
@@ -49,64 +50,44 @@ const Card = styled.article<{ $sex: Sex; $growsUp: boolean }>`
     box-shadow 0.2s ease,
     border-color 0.2s ease;
 
-  &:hover {
+  &:hover,
+  &:focus-visible {
+    z-index: 20;
     transform: translateY(${({ $growsUp }) => ($growsUp ? "2px" : "-2px")});
     box-shadow: 0 6px 16px rgba(28, 42, 34, 0.1);
     border-color: var(--accent);
   }
-`;
 
-const Photo = styled.div<{ $hasImage: boolean; $growsUp: boolean }>`
-  position: relative;
-  width: 100%;
-  height: 196px;
-  flex: none;
-  background: linear-gradient(160deg, #e8eee9 0%, var(--photo-fallbacks) 100%);
-  overflow: hidden;
-
-  ${({ $hasImage }) =>
-    !$hasImage &&
-    css`
-      &::after {
-        content: "";
-        position: absolute;
-        inset: 18% 22%;
-        border: 1px solid rgba(28, 42, 34, 0.12);
-        border-radius: 50% 50% 46% 46%;
-        background: rgba(255, 255, 255, 0.35);
-      }
-    `}
-
-  img {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-    object-position: ${({ $growsUp }) => ($growsUp ? "center bottom" : "center top")};
-    display: block;
+  &:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
   }
 `;
 
 const Body = styled.div<{ $growsUp: boolean }>`
+  min-height: 0;
   flex: 1;
   display: flex;
   flex-direction: ${({ $growsUp }) => ($growsUp ? "column-reverse" : "column")};
-  gap: 0.2rem;
-  padding: 0.55rem 0.65rem 0.7rem;
+  justify-content: center;
+  gap: 0.75rem;
+  padding: 1.25rem;
+  overflow: hidden;
   text-align: center;
 `;
 
 const Name = styled.h2`
   margin: 0;
-  font-size: 0.78rem;
-  font-weight: 500;
-  line-height: 1.25;
+  font-size: 2.35rem;
+  font-weight: 700;
+  line-height: 1.2;
   color: var(--ink);
-  letter-spacing: 0.01em;
+  overflow-wrap: anywhere;
 `;
 
 const Dates = styled.p`
   margin: 0;
-  font-size: 0.62rem;
+  font-size: 1.25rem;
   line-height: 1.3;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
@@ -114,7 +95,7 @@ const Dates = styled.p`
 
 const Place = styled.p`
   margin: 0.15rem 0 0;
-  font-size: 0.55rem;
+  font-size: 1.1rem;
   line-height: 1.2;
   color: var(--muted);
   opacity: 0.85;
@@ -123,6 +104,73 @@ const Place = styled.p`
   text-overflow: ellipsis;
 `;
 
+const Biography = styled.aside<{ $growsUp: boolean }>`
+  position: absolute;
+  z-index: 30;
+  left: 50%;
+  ${({ $growsUp }) =>
+    $growsUp
+      ? css`
+          top: calc(100% + 10px);
+          transform: translate(-50%, -4px);
+        `
+      : css`
+          bottom: calc(100% + 10px);
+          transform: translate(-50%, 4px);
+        `}
+  width: 420px;
+  max-width: calc(100vw - 2rem);
+  max-height: 280px;
+  box-sizing: border-box;
+  padding: 0.75rem 0.8rem;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  box-shadow: 0 8px 24px rgba(28, 42, 34, 0.18);
+  font-size: 1.1rem;
+  line-height: 1.45;
+  text-align: left;
+  white-space: pre-line;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity 0.15s ease,
+    transform 0.15s ease,
+    visibility 0.15s ease;
+
+  &::before {
+    content: "";
+    position: absolute;
+    left: 50%;
+    width: 14px;
+    height: 14px;
+    background: #fff;
+    ${({ $growsUp }) =>
+      $growsUp
+        ? css`
+            top: -8px;
+            border-top: 1px solid var(--line);
+            border-left: 1px solid var(--line);
+          `
+        : css`
+            bottom: -8px;
+            border-right: 1px solid var(--line);
+            border-bottom: 1px solid var(--line);
+          `}
+    transform: translateX(-50%) rotate(45deg);
+  }
+
+  ${Card}:hover &,
+  ${Card}:focus-visible & {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+    transform: translate(-50%, 0);
+  }
+`;
 const handleStyle = {
   opacity: 0,
   width: 8,
@@ -152,20 +200,18 @@ function formatLifespan(person: Person): string {
 export function PersonNode({ data: person }: { data: Person }) {
   const lifespan = formatLifespan(person);
   const place = person.birthPlace || person.deathPlace;
+  const biography = person.biography?.trim();
+  const biographyId = `person-biography-${person.id}`;
   const growsUp = TREE_GROWS_UP;
   const parentSide = growsUp ? Position.Bottom : Position.Top;
   const childSide = growsUp ? Position.Top : Position.Bottom;
 
   return (
-    <Card $sex={person.sex} $growsUp={growsUp}>
+    <Card $sex={person.sex} $growsUp={growsUp} tabIndex={biography ? 0 : undefined} aria-describedby={biography ? biographyId : undefined}>
       <Handle type="target" position={parentSide} id="parent" style={handleStyle} />
       <Handle type="source" position={childSide} id="child" style={handleStyle} />
       <Handle type="source" position={Position.Right} id="partner-first" style={handleStyle} />
       <Handle type="source" position={Position.Left} id="partner-second" style={handleStyle} />
-
-      <Photo $hasImage={Boolean(person.photoUrl)} $growsUp={growsUp}>
-        {person.photoUrl ? <img src={person.photoUrl} alt={`${person.firstName} ${person.lastName}`} draggable={false} /> : null}
-      </Photo>
 
       <Body $growsUp={growsUp}>
         <Name>
@@ -174,6 +220,11 @@ export function PersonNode({ data: person }: { data: Person }) {
         {lifespan ? <Dates>{lifespan}</Dates> : null}
         {place ? <Place>{place}</Place> : null}
       </Body>
+      {biography ? (
+        <Biography id={biographyId} role="tooltip" $growsUp={growsUp}>
+          {biography}
+        </Biography>
+      ) : null}
     </Card>
   );
 }

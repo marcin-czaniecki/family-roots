@@ -21,8 +21,8 @@ export const edgeTypes = {
 type PersonNodeData = Person & Record<string, unknown>;
 type PersonFlowNode = Node<PersonNodeData, "person">;
 
-export const PERSON_W = 168;
-export const PERSON_H = 268;
+export const PERSON_W = 360;
+export const PERSON_H = 240;
 const RELATION_SIZE = 14;
 const GAP = 64;
 const GEN_H = 400;

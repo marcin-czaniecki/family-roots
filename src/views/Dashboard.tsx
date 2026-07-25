@@ -747,6 +747,7 @@ function RelationList({
                   <ItemTitle>
                     <TypeBadge $type={relation.type}>{relation.type}</TypeBadge>
                     {relation.root ? <RootBadge>root</RootBadge> : null}
+                    {relation.id}
                   </ItemTitle>
                   <ItemMeta>
                     first: {personRefLabel(refId(relation.first))}
