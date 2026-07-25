@@ -2,6 +2,8 @@ import { addDoc, collection, doc, serverTimestamp, Timestamp } from "firebase/fi
 import { useEffect, useMemo, useState } from "react";
 import { useLoaderData, useRevalidator } from "react-router";
 import styled from "styled-components";
+import { PersonSearchSelect } from "@/components/PersonSearchSelect";
+import { matchesPersonQuery, personDatesOrId, personLabel, personName } from "@/entities/person/label";
 import type { Person } from "@/entities/person/types";
 import type { Relation } from "@/entities/relation/types";
 import { db } from "@/firebase";
@@ -98,10 +100,6 @@ function toPersonPayload(form: PersonFormValues) {
     sex: form.sex === "male",
     createdAt: serverTimestamp(),
   };
-}
-
-function personLabel(person: Person) {
-  return `${person.firstName} ${person.lastName}`.trim() || person.id;
 }
 
 function refId(value: { id?: string } | null | undefined) {
@@ -313,23 +311,43 @@ function PersonForm({ onCreated }: { onCreated: (person: Person) => void }) {
 }
 
 function PersonList({ people }: { people: Person[] }) {
+  const [query, setQuery] = useState("");
+  const filtered = useMemo(() => people.filter((person) => matchesPersonQuery(person, query)), [people, query]);
+
   return (
     <Card>
       <CardTitle>Lista osób</CardTitle>
-      <CardHint>{people.length} rekordów</CardHint>
+      <CardHint>
+        {filtered.length}
+        {query.trim() ? ` z ${people.length}` : ""} rekordów
+      </CardHint>
+      <ListSearch
+        type="search"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        placeholder="Filtruj listę (imię, data, id)…"
+      />
       {people.length === 0 ? (
         <Empty>Brak osób w kolekcji people.</Empty>
+      ) : filtered.length === 0 ? (
+        <Empty>Brak wyników dla „{query.trim()}”.</Empty>
       ) : (
         <List>
-          {people.map((person) => (
-            <ListItem key={person.id}>
-              <ItemTitle>{personLabel(person)}</ItemTitle>
-              <ItemMeta>
-                {person.birth?.year ? `* ${person.birth.year}` : "—"}
-                {person.birthPlace ? ` · ${person.birthPlace}` : ""}
-              </ItemMeta>
-            </ListItem>
-          ))}
+          {filtered.map((person) => {
+            const hint = personDatesOrId(person);
+            return (
+              <ListItem key={person.id}>
+                <ItemTitle>
+                  {personName(person)}
+                  {" — "}
+                  <PersonHint>{hint.text}</PersonHint>
+                </ItemTitle>
+                <ItemMeta>
+                  {[person.birthPlace, person.deathPlace ? `† ${person.deathPlace}` : null].filter(Boolean).join(" · ") || "—"}
+                </ItemMeta>
+              </ListItem>
+            );
+          })}
         </List>
       )}
     </Card>
@@ -456,26 +474,27 @@ function RelationForm({
 
         <Field>
           <Label htmlFor="firstId">First *</Label>
-          <Select id="firstId" value={form.firstId} onChange={(e) => update("firstId", e.target.value)} required>
-            <option value="">— wybierz osobę —</option>
-            {people.map((person) => (
-              <option key={person.id} value={person.id}>
-                {personLabel(person)}
-              </option>
-            ))}
-          </Select>
+          <PersonSearchSelect
+            id="firstId"
+            people={people}
+            value={form.firstId}
+            onChange={(personId) => update("firstId", personId)}
+            required
+            placeholder="Szukaj first…"
+          />
         </Field>
 
         <Field>
           <Label htmlFor="secondId">Second</Label>
-          <Select id="secondId" value={form.secondId} onChange={(e) => update("secondId", e.target.value)}>
-            <option value="">— brak —</option>
-            {people.map((person) => (
-              <option key={person.id} value={person.id}>
-                {personLabel(person)}
-              </option>
-            ))}
-          </Select>
+          <PersonSearchSelect
+            id="secondId"
+            people={people}
+            value={form.secondId}
+            onChange={(personId) => update("secondId", personId)}
+            allowEmpty
+            emptyLabel="— brak —"
+            placeholder="Szukaj second…"
+          />
         </Field>
 
         <Field $span={2}>
@@ -492,14 +511,14 @@ function RelationForm({
           <FieldGrid>
             <Field $span={2}>
               <Label htmlFor="personId">Dziecko (person) *</Label>
-              <Select id="personId" value={form.personId} onChange={(e) => update("personId", e.target.value)} required>
-                <option value="">— wybierz osobę —</option>
-                {people.map((person) => (
-                  <option key={person.id} value={person.id}>
-                    {personLabel(person)}
-                  </option>
-                ))}
-              </Select>
+              <PersonSearchSelect
+                id="personId"
+                people={people}
+                value={form.personId}
+                onChange={(personId) => update("personId", personId)}
+                required
+                placeholder="Szukaj dziecka…"
+              />
             </Field>
             <Field $span={2}>
               <Label htmlFor="parentshipId">Parentship (relacja partner)</Label>
@@ -547,10 +566,18 @@ function RelationList({
   relations: Relation[];
   peopleById: Map<string, Person>;
 }) {
-  const nameOf = (id: string | null | undefined) => {
+  const personRefLabel = (id: string | null | undefined) => {
     if (!id) return "—";
     const person = peopleById.get(id);
-    return person ? personLabel(person) : id;
+    if (!person) return id;
+    const hint = personDatesOrId(person);
+    return (
+      <>
+        {personName(person)}
+        {" — "}
+        <PersonHint>{hint.text}</PersonHint>
+      </>
+    );
   };
 
   return (
@@ -568,13 +595,13 @@ function RelationList({
                 {relation.root ? <RootBadge>root</RootBadge> : null}
               </ItemTitle>
               <ItemMeta>
-                first: {nameOf(refId(relation.first))}
+                first: {personRefLabel(refId(relation.first))}
                 {" · "}
-                second: {nameOf(refId(relation.second))}
+                second: {personRefLabel(refId(relation.second))}
               </ItemMeta>
               {relation.type === "parent" ? (
                 <ItemMeta>
-                  person: {nameOf(refId(relation.person))}
+                  person: {personRefLabel(refId(relation.person))}
                   {" · "}
                   parentship: {refId(relation.parentship) ?? "—"}
                 </ItemMeta>
@@ -779,6 +806,11 @@ const List = styled.ul`
   overflow: auto;
 `;
 
+const ListSearch = styled.input`
+  ${inputStyles}
+  margin-bottom: 0.75rem;
+`;
+
 const ListItem = styled.li`
   padding: 0.65rem 0.75rem;
   border: 1px solid var(--line);
@@ -797,6 +829,12 @@ const ItemMeta = styled.div`
   margin-top: 0.2rem;
   font-size: 0.75rem;
   color: var(--muted);
+`;
+
+const PersonHint = styled.span`
+  text-decoration: underline;
+  text-underline-offset: 0.12em;
+  font-variant-numeric: tabular-nums;
 `;
 
 const TypeBadge = styled.span<{ $type: "partner" | "parent" }>`

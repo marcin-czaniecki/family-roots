@@ -4,7 +4,7 @@ import { PersonNode } from "@/components/PersonNode";
 import { RelationNode } from "@/components/RelationNode";
 import { getPerson } from "@/entities/person/getPerson";
 import type { Person } from "@/entities/person/types";
-import { childrenOf, isPartner, partnerOf, sideOfKid } from "@/entities/relation/helpers";
+import { childrenOf, isPartner, partnersOf, sideOfKid } from "@/entities/relation/helpers";
 import type { PartnerRelation, Relation } from "@/entities/relation/types";
 import { TREE_GROWS_UP } from "./genealogyDirection";
 
@@ -27,6 +27,7 @@ const RELATION_SIZE = 14;
 const GAP = 64;
 const GEN_H = 400;
 const COUPLE_GAP = 40;
+const MULTI_PARTNER_GAP = 96;
 const GEN_STEP = TREE_GROWS_UP ? -GEN_H : GEN_H;
 
 function birthRank(person: Person): number {
@@ -36,9 +37,9 @@ function birthRank(person: Person): number {
   return y * 10000 + m * 100 + d;
 }
 
-function getPersonNode(person: Person, position: { x: number; y: number }): PersonFlowNode {
+function getPersonNode(id: string, person: Person, position: { x: number; y: number }): PersonFlowNode {
   return {
-    id: person.id,
+    id,
     type: "person",
     position,
     data: person as PersonNodeData,
@@ -50,10 +51,7 @@ function coupleWidth(partnerRel: PartnerRelation): number {
   return partnerRel.second?.id ? PERSON_W * 2 + COUPLE_GAP : PERSON_W;
 }
 
-function subtreeWidth(relations: Relation[], personId: string, fromPartnershipId?: string): number {
-  const partnerRel = partnerOf(relations, personId, fromPartnershipId);
-  if (!partnerRel) return PERSON_W;
-
+function partnershipBlockWidth(relations: Relation[], partnerRel: PartnerRelation): number {
   const kids = childrenOf(relations, partnerRel);
   const own = coupleWidth(partnerRel);
   if (kids.length === 0) return own;
@@ -63,14 +61,35 @@ function subtreeWidth(relations: Relation[], personId: string, fromPartnershipId
   return Math.max(own, kidsW);
 }
 
-function upsertPersonNode(nodes: Node[], placedPeople: Set<string>, person: Person, position: { x: number; y: number }) {
-  if (placedPeople.has(person.id)) {
-    const existing = nodes.find((node) => node.id === person.id);
-    if (existing) existing.position = position;
-    return;
+function subtreeWidth(relations: Relation[], personId: string, fromPartnershipId?: string): number {
+  const partnerships = partnersOf(relations, personId, fromPartnershipId);
+  if (partnerships.length === 0) return PERSON_W;
+
+  return partnerships.reduce((sum, partnerRel, index) => {
+    const block = partnershipBlockWidth(relations, partnerRel);
+    return sum + block + (index > 0 ? MULTI_PARTNER_GAP : 0);
+  }, 0);
+}
+
+/** Reuses person.id on first placement; later marriages get a duplicate card. */
+function upsertPersonNode(
+  nodes: Node[],
+  placedPeople: Set<string>,
+  person: Person,
+  position: { x: number; y: number },
+  partnerRelId?: string,
+): string {
+  const nodeId = placedPeople.has(person.id) && partnerRelId ? `${person.id}~${partnerRelId}` : person.id;
+
+  const existing = nodes.find((node) => node.id === nodeId);
+  if (existing) {
+    existing.position = position;
+    return nodeId;
   }
+
   placedPeople.add(person.id);
-  nodes.push(getPersonNode(person, position));
+  nodes.push(getPersonNode(nodeId, person, position));
+  return nodeId;
 }
 
 function addDescentEdge(sourceId: string, childId: string, lane: DescentEdgeData["lane"], edges: Edge[]) {
@@ -85,12 +104,12 @@ function addDescentEdge(sourceId: string, childId: string, lane: DescentEdgeData
   });
 }
 
-function addPartnerEdge(personId: string, relationId: string, side: "left" | "right", edges: Edge[]) {
+function addPartnerEdge(personNodeId: string, relationId: string, side: "left" | "right", edges: Edge[]) {
   const sourceHandle = side === "left" ? "partner-first" : "partner-second";
   const targetHandle = side === "left" ? "partner-first" : "partner-second";
   edges.push({
-    id: `${personId}->${relationId}`,
-    source: personId,
+    id: `${personNodeId}->${relationId}`,
+    source: personNodeId,
     target: relationId,
     sourceHandle,
     targetHandle,
@@ -142,12 +161,13 @@ async function placePartnership(
     draggable: true,
   });
 
-  upsertPersonNode(nodes, placedPeople, left, { x: leftX, y });
-  addPartnerEdge(left.id, partnerRel.id, "left", edges);
+  const leftNodeId = upsertPersonNode(nodes, placedPeople, left, { x: leftX, y }, partnerRel.id);
+  addPartnerEdge(leftNodeId, partnerRel.id, "left", edges);
 
+  let rightNodeId: string | null = null;
   if (right) {
-    upsertPersonNode(nodes, placedPeople, right, { x: rightX, y });
-    addPartnerEdge(right.id, partnerRel.id, "right", edges);
+    rightNodeId = upsertPersonNode(nodes, placedPeople, right, { x: rightX, y }, partnerRel.id);
+    addPartnerEdge(rightNodeId, partnerRel.id, "right", edges);
   }
 
   const kids = childrenOf(relations, partnerRel);
@@ -183,22 +203,25 @@ async function placePartnership(
     let cursor = startX;
     for (const { child, person, side, width: w } of group) {
       const slotLeft = cursor;
-      const ownPartner = partnerOf(relations, child.person.id, partnerRel.id);
+      const ownPartners = partnersOf(relations, child.person.id, partnerRel.id);
 
-      if (ownPartner) {
-        const coupleW = coupleWidth(ownPartner);
-        const coupleCenter = slotLeft + coupleW / 2;
-        await placePartnership(
-          relations,
-          ownPartner,
-          coupleCenter,
-          childY,
-          nodes,
-          edges,
-          placedPeople,
-          placedRelations,
-          child.person.id,
-        );
+      if (ownPartners.length > 0) {
+        let partnerCursor = slotLeft;
+        for (const ownPartner of ownPartners) {
+          const blockW = partnershipBlockWidth(relations, ownPartner);
+          await placePartnership(
+            relations,
+            ownPartner,
+            partnerCursor + blockW / 2,
+            childY,
+            nodes,
+            edges,
+            placedPeople,
+            placedRelations,
+            child.person.id,
+          );
+          partnerCursor += blockW + MULTI_PARTNER_GAP;
+        }
       } else {
         upsertPersonNode(nodes, placedPeople, person, { x: slotLeft + (w - PERSON_W) / 2, y: childY });
       }
@@ -206,8 +229,8 @@ async function placePartnership(
       if (side === "center") {
         addDescentEdge(partnerRel.id, child.person.id, "union", edges);
       } else {
-        const parentPersonId = side === "left" ? left.id : (right?.id ?? left.id);
-        addDescentEdge(parentPersonId, child.person.id, "direct", edges);
+        const parentNodeId = side === "left" ? leftNodeId : (rightNodeId ?? leftNodeId);
+        addDescentEdge(parentNodeId, child.person.id, "direct", edges);
       }
       cursor += w + GAP;
     }

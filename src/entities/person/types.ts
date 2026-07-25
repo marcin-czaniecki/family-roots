@@ -13,7 +13,15 @@ export interface Person {
   deathPlace: string | null;
   father: DocumentReference | null;
   mother: DocumentReference | null;
-  middleNames: string[];
+  middleNames?: string[] | null;
   photoUrl: string | null;
   sex: boolean;
+}
+
+export function normalizePerson(id: string, data: Record<string, unknown>): Person {
+  return {
+    ...(data as Omit<Person, "id" | "middleNames">),
+    id,
+    middleNames: Array.isArray(data.middleNames) ? (data.middleNames as string[]) : [],
+  };
 }

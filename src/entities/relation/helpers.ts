@@ -25,11 +25,15 @@ export function childrenOf(relations: Relation[], partnerRel: PartnerRelation): 
   });
 }
 
-export function partnerOf(relations: Relation[], personId: string, excludeRelationId?: string) {
-  return relations.find(
+export function partnersOf(relations: Relation[], personId: string, excludeRelationId?: string): PartnerRelation[] {
+  return relations.filter(
     (r): r is PartnerRelation =>
       isPartner(r) && r.id !== excludeRelationId && (r.first.id === personId || r.second?.id === personId),
   );
+}
+
+export function partnerOf(relations: Relation[], personId: string, excludeRelationId?: string) {
+  return partnersOf(relations, personId, excludeRelationId)[0];
 }
 
 /** Linked only to left parent → left, only to right → right, couple's child → center. */
