@@ -8,7 +8,7 @@ import { PersonFormFields } from "@/components/PersonFormFields";
 import { PersonSearchSelect } from "@/components/PersonSearchSelect";
 import { matchesPersonQuery, personDatesOrId, personName } from "@/entities/person/label";
 import type { Person } from "@/entities/person/types";
-import type { PartnerRelation, Relation } from "@/entities/relation/types";
+import type { ParentRelation, PartnerRelation, Relation } from "@/entities/relation/types";
 import { edgeTypes, nodeTypes } from "@/features/genealogyLayout";
 import { deletePersonWithRelations, getPersonDeletionImpact } from "@/features/personDeletion";
 import { emptyPersonForm, type PersonFormValues, personFormPayload, personToForm, validatePersonForm } from "@/features/personForm";
@@ -193,6 +193,23 @@ export function Home() {
     });
     setEditingPerson(null);
   };
+  const saveParentRelation = async (relation: ParentRelation, secondParentId: string) => {
+    const parentship = secondParentId
+      ? relations
+          .filter(
+            (candidate): candidate is PartnerRelation =>
+              candidate.type === "partner" &&
+              ((candidate.first.id === relation.first.id && candidate.second?.id === secondParentId) ||
+                (candidate.first.id === secondParentId && candidate.second?.id === relation.first.id)),
+          )
+          .sort((first, second) => first.id.localeCompare(second.id))[0]
+      : null;
+
+    await updateDoc(doc(db, "relations", relation.id), {
+      second: secondParentId ? doc(db, "people", secondParentId) : null,
+      parentship: parentship ? doc(db, "relations", parentship.id) : null,
+    });
+  };
   const deleteRelation = async (relation: Relation) => {
     await deleteRelationWithDependents(relation, relations);
   };
@@ -308,6 +325,7 @@ export function Home() {
           onCancel={() => setEditingPerson(null)}
           onSave={(values) => savePerson(editingPerson.id, values)}
           onDelete={() => deletePerson(editingPerson)}
+          onSaveParentRelation={saveParentRelation}
           onDeleteRelation={deleteRelation}
         />
       ) : null}
@@ -432,6 +450,7 @@ function EditPersonEditor({
   onCancel,
   onSave,
   onDelete,
+  onSaveParentRelation,
   onDeleteRelation,
 }: {
   person: Person;
@@ -440,12 +459,14 @@ function EditPersonEditor({
   onCancel: () => void;
   onSave: (values: PersonFormValues) => Promise<void>;
   onDelete: () => Promise<void>;
+  onSaveParentRelation: (relation: ParentRelation, secondParentId: string) => Promise<void>;
   onDeleteRelation: (relation: Relation) => Promise<void>;
 }) {
   const [activeTab, setActiveTab] = useState<"details" | "relations">("details");
   const [form, setForm] = useState(() => personToForm(person));
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [editingParentRelationId, setEditingParentRelationId] = useState<string | null>(null);
   const [deletingRelationId, setDeletingRelationId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const peopleById = useMemo(() => new Map(people.map((candidate) => [candidate.id, candidate])), [people]);
@@ -455,6 +476,9 @@ function EditPersonEditor({
         (relation) => relation.first.id === person.id || relation.second?.id === person.id || (relation.type === "parent" && relation.person.id === person.id),
       ),
     [person.id, relations],
+  );
+  const editingParentRelation = personRelations.find(
+    (relation): relation is ParentRelation => relation.type === "parent" && relation.id === editingParentRelationId,
   );
   const busy = saving || deleting || deletingRelationId !== null;
 
@@ -568,6 +592,7 @@ function EditPersonEditor({
           disabled={busy}
           onClick={() => {
             setActiveTab("details");
+            setEditingParentRelationId(null);
             setError(null);
           }}
         >
@@ -582,6 +607,7 @@ function EditPersonEditor({
           disabled={busy}
           onClick={() => {
             setActiveTab("relations");
+            setEditingParentRelationId(null);
             setError(null);
           }}
         >
@@ -607,7 +633,18 @@ function EditPersonEditor({
         </div>
       ) : (
         <PersonRelationsPanel id="person-relations-panel" role="tabpanel">
-          {personRelations.length === 0 ? (
+          {editingParentRelation ? (
+            <ParentRelationEditor
+              relation={editingParentRelation}
+              people={people}
+              relations={relations}
+              onCancel={() => setEditingParentRelationId(null)}
+              onSave={async (secondParentId) => {
+                await onSaveParentRelation(editingParentRelation, secondParentId);
+                setEditingParentRelationId(null);
+              }}
+            />
+          ) : personRelations.length === 0 ? (
             <RelationsEmpty>Ta osoba nie ma zapisanych relacji.</RelationsEmpty>
           ) : (
             <PersonRelationsList>
@@ -637,14 +674,21 @@ function EditPersonEditor({
                       ) : null}
                       <PersonRelationId>{relation.id}</PersonRelationId>
                     </PersonRelationContent>
-                    <RelationDeleteButton
-                      type="button"
-                      disabled={busy}
-                      aria-label={`Usuń relację ${description.role}: ${description.description}`}
-                      onClick={() => void handleDeleteRelation(relation)}
-                    >
-                      {deletingRelationId === relation.id ? "Usuwanie…" : "Usuń"}
-                    </RelationDeleteButton>
+                    <RelationItemActions>
+                      {relation.type === "parent" ? (
+                        <RelationEditButton type="button" disabled={busy} onClick={() => setEditingParentRelationId(relation.id)}>
+                          Edytuj
+                        </RelationEditButton>
+                      ) : null}
+                      <RelationDeleteButton
+                        type="button"
+                        disabled={busy}
+                        aria-label={`Usuń relację ${description.role}: ${description.description}`}
+                        onClick={() => void handleDeleteRelation(relation)}
+                      >
+                        {deletingRelationId === relation.id ? "Usuwanie…" : "Usuń"}
+                      </RelationDeleteButton>
+                    </RelationItemActions>
                   </PersonRelationItem>
                 );
               })}
@@ -656,6 +700,122 @@ function EditPersonEditor({
     </EditorDrawer>
   );
 }
+function ParentRelationEditor({
+  relation,
+  people,
+  relations,
+  onCancel,
+  onSave,
+}: {
+  relation: ParentRelation;
+  people: Person[];
+  relations: Relation[];
+  onCancel: () => void;
+  onSave: (secondParentId: string) => Promise<void>;
+}) {
+  const [secondParentId, setSecondParentId] = useState(relation.second?.id ?? "");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const peopleById = useMemo(() => new Map(people.map((person) => [person.id, person])), [people]);
+  const availablePeople = useMemo(
+    () => people.filter((person) => person.id !== relation.first.id && person.id !== relation.person.id),
+    [people, relation.first.id, relation.person.id],
+  );
+  const matchedParentship = useMemo(() => {
+    if (!secondParentId) return null;
+    return (
+      relations
+        .filter(
+          (candidate): candidate is PartnerRelation =>
+            candidate.type === "partner" &&
+            ((candidate.first.id === relation.first.id && candidate.second?.id === secondParentId) ||
+              (candidate.first.id === secondParentId && candidate.second?.id === relation.first.id)),
+        )
+        .sort((first, second) => first.id.localeCompare(second.id))[0] ?? null
+    );
+  }, [relation.first.id, relations, secondParentId]);
+
+  const labelById = (personId: string) => {
+    const person = peopleById.get(personId);
+    return person ? personName(person) : personId;
+  };
+  const parentshipPeople = matchedParentship
+    ? [matchedParentship.first.id, matchedParentship.second?.id]
+        .filter((personId): personId is string => Boolean(personId))
+        .map((personId) => labelById(personId))
+    : [];
+
+  const handleSave = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      await onSave(secondParentId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Nie udało się zaktualizować relacji.");
+      setSaving(false);
+    }
+  };
+
+  return (
+    <ParentRelationEditPanel>
+      <ParentRelationEditHeader>
+        <div>
+          <ParentRelationEditTitle>Edytuj relację rodzic–dziecko</ParentRelationEditTitle>
+          <PersonRelationId>{relation.id}</PersonRelationId>
+        </div>
+        <CloseButton type="button" onClick={onCancel} disabled={saving} aria-label="Zamknij edycję relacji" title="Zamknij">
+          ×
+        </CloseButton>
+      </ParentRelationEditHeader>
+
+      <ParentRelationFixedData>
+        <ParentRelationFixedItem>
+          <span>Pierwszy rodzic</span>
+          <strong>{labelById(relation.first.id)}</strong>
+        </ParentRelationFixedItem>
+        <ParentRelationFixedItem>
+          <span>Dziecko</span>
+          <strong>{labelById(relation.person.id)}</strong>
+        </ParentRelationFixedItem>
+      </ParentRelationFixedData>
+
+      <EditorField>
+        <EditorLabel htmlFor={`edit-second-parent-${relation.id}`}>Drugi rodzic</EditorLabel>
+        <PersonSearchSelect
+          id={`edit-second-parent-${relation.id}`}
+          people={availablePeople}
+          value={secondParentId}
+          onChange={setSecondParentId}
+          allowEmpty
+          emptyLabel="Brak drugiego rodzica"
+          placeholder="Wyszukaj drugiego rodzica"
+        />
+      </EditorField>
+
+      <ParentshipMatch $matched={Boolean(matchedParentship)} $empty={!secondParentId}>
+        <strong>Parentship</strong>
+        <span>
+          {!secondParentId
+            ? "Brak drugiego rodzica. Parentship zostanie wyczyszczone."
+            : matchedParentship
+              ? `Dopasowano parę: ${parentshipPeople.join(" i ")} (${matchedParentship.id}).`
+              : "Brak relacji partnerskiej dla wybranych rodziców. Parentship zostanie wyczyszczone."}
+        </span>
+      </ParentshipMatch>
+
+      {error ? <EditorError>{error}</EditorError> : null}
+      <EditorActions>
+        <SaveButton type="button" disabled={saving} onClick={() => void handleSave()}>
+          {saving ? "Zapisywanie…" : "Zapisz relację"}
+        </SaveButton>
+        <CancelButton type="button" disabled={saving} onClick={onCancel}>
+          Anuluj
+        </CancelButton>
+      </EditorActions>
+    </ParentRelationEditPanel>
+  );
+}
+
 function RelationEditor({
   draft,
   people,
@@ -1154,6 +1314,111 @@ const PersonRelationId = styled.p`
   font-size: 0.66rem;
   line-height: 1.2;
   overflow-wrap: anywhere;
+`;
+
+const RelationItemActions = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+`;
+
+const RelationEditButton = styled.button`
+  border: 1px solid var(--accent);
+  background: #fff;
+  color: var(--accent);
+  padding: 0.45rem 0.65rem;
+  font: inherit;
+  font-size: 0.76rem;
+  font-weight: 700;
+  cursor: pointer;
+
+  &:hover:not(:disabled) {
+    background: var(--accent);
+    color: #fff;
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  &:disabled {
+    opacity: 0.55;
+    cursor: default;
+  }
+`;
+
+const ParentRelationEditPanel = styled.section`
+  border-top: 3px solid var(--accent);
+  background: #fff;
+  padding: 0.85rem;
+`;
+
+const ParentRelationEditHeader = styled.header`
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.85rem;
+`;
+
+const ParentRelationEditTitle = styled.h3`
+  margin: 0;
+  color: var(--ink);
+  font-size: 0.92rem;
+  font-weight: 700;
+`;
+
+const ParentRelationFixedData = styled.div`
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.65rem;
+  margin-bottom: 0.8rem;
+
+  @media (max-width: 420px) {
+    grid-template-columns: 1fr;
+  }
+`;
+
+const ParentRelationFixedItem = styled.div`
+  min-width: 0;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 0.45rem;
+
+  span,
+  strong {
+    display: block;
+  }
+
+  span {
+    color: var(--muted);
+    font-size: 0.68rem;
+  }
+
+  strong {
+    margin-top: 0.2rem;
+    color: var(--ink);
+    font-size: 0.8rem;
+    line-height: 1.3;
+    overflow-wrap: anywhere;
+  }
+`;
+
+const ParentshipMatch = styled.div<{ $matched: boolean; $empty: boolean }>`
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  margin-top: 0.75rem;
+  border: 1px solid ${({ $matched, $empty }) => ($matched ? "#91aa9b" : $empty ? "#b9ad9b" : "#c88978")};
+  background: ${({ $matched, $empty }) => ($matched ? "#e8efe9" : $empty ? "#f1ede7" : "#fff1ee")};
+  color: ${({ $matched, $empty }) => ($matched || $empty ? "var(--ink)" : "#8b3a2a")};
+  padding: 0.6rem 0.65rem;
+  font-size: 0.72rem;
+  line-height: 1.4;
+
+  strong {
+    font-size: 0.7rem;
+  }
 `;
 
 const RelationDeleteButton = styled.button`
