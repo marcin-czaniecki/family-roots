@@ -4,11 +4,13 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLoaderData } from "react-router";
 import styled from "styled-components";
 import { FitToTop } from "@/components/FitToTop";
+import { PersonFormFields } from "@/components/PersonFormFields";
 import { PersonSearchSelect } from "@/components/PersonSearchSelect";
 import { matchesPersonQuery, personDatesOrId, personName } from "@/entities/person/label";
 import { normalizePerson, type Person } from "@/entities/person/types";
 import type { PartnerRelation, Relation } from "@/entities/relation/types";
 import { buildGenealogyGraph, edgeTypes, nodeTypes } from "@/features/genealogyLayout";
+import { emptyPersonForm, type PersonFormValues, personFormPayload, personToForm, validatePersonForm } from "@/features/personForm";
 import { db } from "@/firebase";
 
 import "@xyflow/react/dist/style.css";
@@ -20,111 +22,9 @@ type GenealogyLoaderData = {
   relations: Relation[];
 };
 
-type NewPersonValues = {
-  biography: string;
-  firstName: string;
-  lastName: string;
-  middleNames: string;
-  birthDay: string;
-  birthMonth: string;
-  birthYear: string;
-  birthPlace: string;
-  birthSurname: string;
-  deathDay: string;
-  deathMonth: string;
-  deathYear: string;
-  deathPlace: string;
-  photoUrl: string;
-  sex: "female" | "male";
-};
-
 const SEARCH_PAGE_SIZE = 6;
 
-const emptyNewPerson = (): NewPersonValues => ({
-  biography: "",
-  firstName: "",
-  lastName: "",
-  middleNames: "",
-  birthDay: "",
-  birthMonth: "",
-  birthYear: "",
-  birthPlace: "",
-  birthSurname: "",
-  deathDay: "",
-  deathMonth: "",
-  deathYear: "",
-  deathPlace: "",
-  photoUrl: "",
-  sex: "female",
-});
-
-function parseOptionalInt(value: string): number | null {
-  if (!value.trim()) return null;
-  const parsed = Number(value);
-  return Number.isInteger(parsed) ? parsed : null;
-}
-
-function buildPartialDate(day: string, month: string, year: string) {
-  const parsedYear = parseOptionalInt(year);
-  if (parsedYear === null) return null;
-  return {
-    day: parseOptionalInt(day),
-    month: parseOptionalInt(month),
-    year: parsedYear,
-  };
-}
-
-function validatePartialDate(day: string, month: string, year: string, label: string): string | null {
-  const hasAnyValue = Boolean(day.trim() || month.trim() || year.trim());
-  if (!hasAnyValue) return null;
-  const parsedDay = parseOptionalInt(day);
-  const parsedMonth = parseOptionalInt(month);
-  const parsedYear = parseOptionalInt(year);
-  if (parsedYear === null || parsedYear < 1 || parsedYear > 9999) return `${label}: podaj poprawny rok.`;
-  if (day.trim() && (parsedDay === null || parsedDay < 1 || parsedDay > 31)) return `${label}: dzień musi mieścić się w zakresie 1–31.`;
-  if (month.trim() && (parsedMonth === null || parsedMonth < 1 || parsedMonth > 12)) return `${label}: miesiąc musi mieścić się w zakresie 1–12.`;
-  return null;
-}
-
-function personToForm(person: Person): NewPersonValues {
-  return {
-    biography: person.biography ?? "",
-    firstName: person.firstName,
-    lastName: person.lastName,
-    middleNames: (person.middleNames ?? []).join(", "),
-    birthDay: person.birth?.day ? String(person.birth.day) : "",
-    birthMonth: person.birth?.month ? String(person.birth.month) : "",
-    birthYear: person.birth?.year ? String(person.birth.year) : "",
-    birthPlace: person.birthPlace ?? "",
-    birthSurname: person.birthSurname ?? "",
-    deathDay: person.death?.day ? String(person.death.day) : "",
-    deathMonth: person.death?.month ? String(person.death.month) : "",
-    deathYear: person.death?.year ? String(person.death.year) : "",
-    deathPlace: person.deathPlace ?? "",
-    photoUrl: person.photoUrl ?? "",
-    sex: person.sex ? "male" : "female",
-  };
-}
-
-function editablePersonPayload(person: NewPersonValues) {
-  return {
-    biography: person.biography.trim() || null,
-    firstName: person.firstName.trim(),
-    lastName: person.lastName.trim(),
-    middleNames: person.middleNames
-      .split(",")
-      .map((name) => name.trim())
-      .filter(Boolean),
-    birth: buildPartialDate(person.birthDay, person.birthMonth, person.birthYear),
-    birthPlace: person.birthPlace.trim() || null,
-    birthSurname: person.birthSurname.trim() || null,
-    death: buildPartialDate(person.deathDay, person.deathMonth, person.deathYear),
-    deathPlace: person.deathPlace.trim() || null,
-    photoUrl: person.photoUrl.trim() || null,
-    sex: person.sex === "male",
-  };
-}
-type RelationTarget = { mode: "existing"; personId: string } | { mode: "new"; person: NewPersonValues };
+type RelationTarget = { mode: "existing"; personId: string } | { mode: "new"; person: PersonFormValues };
 
 type RelationDraft =
   | {
@@ -311,22 +211,9 @@ export function Home() {
 
     if (target.mode === "new") {
       batch.set(personRef, {
-        biography: target.person.biography.trim() || null,
-        firstName: target.person.firstName.trim(),
-        lastName: target.person.lastName.trim(),
-        middleNames: target.person.middleNames
-          .split(",")
-          .map((name) => name.trim())
-          .filter(Boolean),
-        birth: buildPartialDate(target.person.birthDay, target.person.birthMonth, target.person.birthYear),
-        birthPlace: target.person.birthPlace.trim() || null,
-        birthSurname: target.person.birthSurname.trim() || null,
-        death: buildPartialDate(target.person.deathDay, target.person.deathMonth, target.person.deathYear),
-        deathPlace: target.person.deathPlace.trim() || null,
+        ...personFormPayload(target.person),
         father: null,
         mother: null,
-        photoUrl: target.person.photoUrl.trim() || null,
-        sex: target.person.sex === "male",
         createdAt: serverTimestamp(),
       });
     }
@@ -367,9 +254,9 @@ export function Home() {
     await batch.commit();
     setDraft(null);
   };
-  const savePerson = async (personId: string, values: NewPersonValues) => {
+  const savePerson = async (personId: string, values: PersonFormValues) => {
     await updateDoc(doc(db, "people", personId), {
-      ...editablePersonPayload(values),
+      ...personFormPayload(values),
       updatedAt: serverTimestamp(),
     });
     setEditingPerson(null);
@@ -574,51 +461,18 @@ function DiagramPersonSearch({ nodes }: { nodes: Node[] }) {
     </Panel>
   );
 }
-function EditPersonEditor({ person, onCancel, onSave }: { person: Person; onCancel: () => void; onSave: (values: NewPersonValues) => Promise<void> }) {
+function EditPersonEditor({ person, onCancel, onSave }: { person: Person; onCancel: () => void; onSave: (values: PersonFormValues) => Promise<void> }) {
   const [form, setForm] = useState(() => personToForm(person));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  const update = <K extends keyof NewPersonValues>(key: K, value: NewPersonValues[K]) => {
-    setForm((current) => ({ ...current, [key]: value }));
-  };
-
-  const textField = (
-    id: string,
-    label: string,
-    key: Exclude<keyof NewPersonValues, "sex">,
-    options: { required?: boolean; span?: boolean; inputMode?: "numeric"; placeholder?: string; autoFocus?: boolean } = {},
-  ) => (
-    <EditorField $span={options.span}>
-      <EditorLabel htmlFor={id}>
-        {label}
-        {options.required ? " *" : ""}
-      </EditorLabel>
-      <EditorInput
-        id={id}
-        value={form[key]}
-        required={options.required}
-        inputMode={options.inputMode}
-        placeholder={options.placeholder}
-        autoFocus={options.autoFocus}
-        onChange={(event) => update(key, event.target.value)}
-      />
-    </EditorField>
-  );
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setError(null);
 
-    if (!form.firstName.trim() || !form.lastName.trim()) {
-      setError("Imię i nazwisko są wymagane.");
-      return;
-    }
-    const dateError =
-      validatePartialDate(form.birthDay, form.birthMonth, form.birthYear, "Data urodzenia") ??
-      validatePartialDate(form.deathDay, form.deathMonth, form.deathYear, "Data śmierci");
-    if (dateError) {
-      setError(dateError);
+    const validationError = validatePersonForm(form);
+    if (validationError) {
+      setError(validationError);
       return;
     }
 
@@ -643,45 +497,7 @@ function EditPersonEditor({ person, onCancel, onSave }: { person: Person; onCanc
         </CloseButton>
       </EditorHeader>
 
-      <EditorGrid>
-        {textField("edit-first-name", "Imię", "firstName", { required: true, autoFocus: true })}
-        {textField("edit-last-name", "Nazwisko", "lastName", { required: true })}
-        {textField("edit-middle-names", "Drugie imiona", "middleNames", { span: true, placeholder: "oddzielone przecinkami" })}
-        {textField("edit-birth-surname", "Nazwisko rodowe", "birthSurname")}
-        <EditorField>
-          <EditorLabel htmlFor="edit-sex">Płeć</EditorLabel>
-          <EditorSelect id="edit-sex" value={form.sex} onChange={(event) => update("sex", event.target.value as NewPersonValues["sex"])}>
-            <option value="female">Kobieta</option>
-            <option value="male">Mężczyzna</option>
-          </EditorSelect>
-        </EditorField>
-      </EditorGrid>
-
-      <EditorSectionLabel>Urodzenie</EditorSectionLabel>
-      <EditorGrid>
-        {textField("edit-birth-day", "Dzień", "birthDay", { inputMode: "numeric", placeholder: "dd" })}
-        {textField("edit-birth-month", "Miesiąc", "birthMonth", { inputMode: "numeric", placeholder: "mm" })}
-        {textField("edit-birth-year", "Rok", "birthYear", { inputMode: "numeric", placeholder: "rrrr" })}
-        {textField("edit-birth-place", "Miejsce", "birthPlace")}
-      </EditorGrid>
-
-      <EditorSectionLabel>Śmierć</EditorSectionLabel>
-      <EditorGrid>
-        {textField("edit-death-day", "Dzień", "deathDay", { inputMode: "numeric", placeholder: "dd" })}
-        {textField("edit-death-month", "Miesiąc", "deathMonth", { inputMode: "numeric", placeholder: "mm" })}
-        {textField("edit-death-year", "Rok", "deathYear", { inputMode: "numeric", placeholder: "rrrr" })}
-        {textField("edit-death-place", "Miejsce", "deathPlace")}
-      </EditorGrid>
-
-      <EditorSectionLabel>Informacje dodatkowe</EditorSectionLabel>
-      <EditorGrid>
-        {textField("edit-photo-url", "URL zdjęcia", "photoUrl", { span: true, placeholder: "https://…" })}
-        <EditorField $span>
-          <EditorLabel htmlFor="edit-biography">Biografia</EditorLabel>
-          <EditorTextarea id="edit-biography" rows={5} value={form.biography} onChange={(event) => update("biography", event.target.value)} />
-        </EditorField>
-      </EditorGrid>
-
+      <PersonFormFields value={form} onChange={setForm} idPrefix="edit-person" autoFocus />
       {error ? <EditorError>{error}</EditorError> : null}
       <EditorActions>
         <SaveButton type="submit" disabled={saving}>
@@ -710,7 +526,7 @@ function RelationEditor({
   const validPreselection = draft.preselectedPersonId && !excludedIds.has(draft.preselectedPersonId) ? draft.preselectedPersonId : "";
   const [mode, setMode] = useState<"existing" | "new">(validPreselection ? "existing" : "new");
   const [personId, setPersonId] = useState(validPreselection);
-  const [person, setPerson] = useState<NewPersonValues>(emptyNewPerson);
+  const [person, setPerson] = useState<PersonFormValues>(emptyPersonForm);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -732,16 +548,10 @@ function RelationEditor({
       setError("Wybierz osobę.");
       return;
     }
-    if (mode === "new" && (!person.firstName.trim() || !person.lastName.trim())) {
-      setError("Imię i nazwisko są wymagane.");
-      return;
-    }
     if (mode === "new") {
-      const dateError =
-        validatePartialDate(person.birthDay, person.birthMonth, person.birthYear, "Data urodzenia") ??
-        validatePartialDate(person.deathDay, person.deathMonth, person.deathYear, "Data śmierci");
-      if (dateError) {
-        setError(dateError);
+      const validationError = validatePersonForm(person);
+      if (validationError) {
+        setError(validationError);
         return;
       }
     }
@@ -787,164 +597,7 @@ function RelationEditor({
           <PersonSearchSelect id="relation-person" people={availablePeople} value={personId} onChange={setPersonId} required placeholder="Szukaj osoby…" />
         </EditorField>
       ) : (
-        <>
-          <EditorGrid>
-            <EditorField>
-              <EditorLabel htmlFor="new-first-name">Imię *</EditorLabel>
-              <EditorInput
-                id="new-first-name"
-                value={person.firstName}
-                onChange={(event) => setPerson((current) => ({ ...current, firstName: event.target.value }))}
-                autoFocus
-                required
-              />
-            </EditorField>
-            <EditorField>
-              <EditorLabel htmlFor="new-last-name">Nazwisko *</EditorLabel>
-              <EditorInput
-                id="new-last-name"
-                value={person.lastName}
-                onChange={(event) => setPerson((current) => ({ ...current, lastName: event.target.value }))}
-                required
-              />
-            </EditorField>
-            <EditorField $span>
-              <EditorLabel htmlFor="new-middle-names">Drugie imiona</EditorLabel>
-              <EditorInput
-                id="new-middle-names"
-                placeholder="oddzielone przecinkami"
-                value={person.middleNames}
-                onChange={(event) => setPerson((current) => ({ ...current, middleNames: event.target.value }))}
-              />
-            </EditorField>
-            <EditorField>
-              <EditorLabel htmlFor="new-birth-surname">Nazwisko rodowe</EditorLabel>
-              <EditorInput
-                id="new-birth-surname"
-                value={person.birthSurname}
-                onChange={(event) => setPerson((current) => ({ ...current, birthSurname: event.target.value }))}
-              />
-            </EditorField>
-            <EditorField>
-              <EditorLabel htmlFor="new-sex">Płeć</EditorLabel>
-              <EditorSelect
-                id="new-sex"
-                value={person.sex}
-                onChange={(event) => setPerson((current) => ({ ...current, sex: event.target.value as NewPersonValues["sex"] }))}
-              >
-                <option value="female">Kobieta</option>
-                <option value="male">Mężczyzna</option>
-              </EditorSelect>
-            </EditorField>
-          </EditorGrid>
-
-          <EditorSectionLabel>Urodzenie</EditorSectionLabel>
-          <EditorGrid>
-            <EditorField>
-              <EditorLabel htmlFor="new-birth-day">Dzień</EditorLabel>
-              <EditorInput
-                id="new-birth-day"
-                inputMode="numeric"
-                placeholder="dd"
-                value={person.birthDay}
-                onChange={(event) => setPerson((current) => ({ ...current, birthDay: event.target.value }))}
-              />
-            </EditorField>
-            <EditorField>
-              <EditorLabel htmlFor="new-birth-month">Miesiąc</EditorLabel>
-              <EditorInput
-                id="new-birth-month"
-                inputMode="numeric"
-                placeholder="mm"
-                value={person.birthMonth}
-                onChange={(event) => setPerson((current) => ({ ...current, birthMonth: event.target.value }))}
-              />
-            </EditorField>
-            <EditorField>
-              <EditorLabel htmlFor="new-birth-year">Rok</EditorLabel>
-              <EditorInput
-                id="new-birth-year"
-                inputMode="numeric"
-                placeholder="rrrr"
-                value={person.birthYear}
-                onChange={(event) => setPerson((current) => ({ ...current, birthYear: event.target.value }))}
-              />
-            </EditorField>
-            <EditorField>
-              <EditorLabel htmlFor="new-birth-place">Miejsce</EditorLabel>
-              <EditorInput
-                id="new-birth-place"
-                value={person.birthPlace}
-                onChange={(event) => setPerson((current) => ({ ...current, birthPlace: event.target.value }))}
-              />
-            </EditorField>
-          </EditorGrid>
-
-          <EditorSectionLabel>Śmierć</EditorSectionLabel>
-          <EditorGrid>
-            <EditorField>
-              <EditorLabel htmlFor="new-death-day">Dzień</EditorLabel>
-              <EditorInput
-                id="new-death-day"
-                inputMode="numeric"
-                placeholder="dd"
-                value={person.deathDay}
-                onChange={(event) => setPerson((current) => ({ ...current, deathDay: event.target.value }))}
-              />
-            </EditorField>
-            <EditorField>
-              <EditorLabel htmlFor="new-death-month">Miesiąc</EditorLabel>
-              <EditorInput
-                id="new-death-month"
-                inputMode="numeric"
-                placeholder="mm"
-                value={person.deathMonth}
-                onChange={(event) => setPerson((current) => ({ ...current, deathMonth: event.target.value }))}
-              />
-            </EditorField>
-            <EditorField>
-              <EditorLabel htmlFor="new-death-year">Rok</EditorLabel>
-              <EditorInput
-                id="new-death-year"
-                inputMode="numeric"
-                placeholder="rrrr"
-                value={person.deathYear}
-                onChange={(event) => setPerson((current) => ({ ...current, deathYear: event.target.value }))}
-              />
-            </EditorField>
-            <EditorField>
-              <EditorLabel htmlFor="new-death-place">Miejsce</EditorLabel>
-              <EditorInput
-                id="new-death-place"
-                value={person.deathPlace}
-                onChange={(event) => setPerson((current) => ({ ...current, deathPlace: event.target.value }))}
-              />
-            </EditorField>
-          </EditorGrid>
-
-          <EditorSectionLabel>Informacje dodatkowe</EditorSectionLabel>
-          <EditorGrid>
-            <EditorField $span>
-              <EditorLabel htmlFor="new-photo-url">URL zdjęcia</EditorLabel>
-              <EditorInput
-                id="new-photo-url"
-                type="url"
-                placeholder="https://…"
-                value={person.photoUrl}
-                onChange={(event) => setPerson((current) => ({ ...current, photoUrl: event.target.value }))}
-              />
-            </EditorField>
-            <EditorField $span>
-              <EditorLabel htmlFor="new-biography">Biografia</EditorLabel>
-              <EditorTextarea
-                id="new-biography"
-                rows={4}
-                value={person.biography}
-                onChange={(event) => setPerson((current) => ({ ...current, biography: event.target.value }))}
-              />
-            </EditorField>
-          </EditorGrid>
-        </>
+        <PersonFormFields value={person} onChange={setPerson} idPrefix="new-person" autoFocus />
       )}
       {error ? <EditorError>{error}</EditorError> : null}
       <EditorActions>
@@ -1195,7 +848,7 @@ const EditorDrawer = styled.form`
 
   position: absolute;
   z-index: 30;
-  top: 2.75rem;
+  top: 1.75rem;
   right: 1rem;
   width: min(30rem, calc(100vw - 2rem));
   max-height: calc(100vh - 3.75rem);
@@ -1284,24 +937,6 @@ const SegmentButton = styled.button<{ $active: boolean }>`
   }
 `;
 
-const EditorSectionLabel = styled.h3`
-  margin: 1rem 0 0.5rem;
-  color: var(--muted);
-  font-size: 0.72rem;
-  font-weight: 600;
-  text-transform: uppercase;
-`;
-
-const EditorGrid = styled.div`
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0.75rem;
-
-  @media (max-width: 520px) {
-    grid-template-columns: 1fr;
-  }
-`;
-
 const EditorField = styled.div<{ $span?: boolean }>`
   grid-column: ${({ $span }) => ($span ? "1 / -1" : "auto")};
   display: flex;
@@ -1313,36 +948,6 @@ const EditorField = styled.div<{ $span?: boolean }>`
 const EditorLabel = styled.label`
   color: var(--muted);
   font-size: 0.75rem;
-`;
-
-const editorControlStyles = `
-  box-sizing: border-box;
-  width: 100%;
-  border: 1px solid var(--line);
-  background: #fff;
-  color: var(--ink);
-  padding: 0.55rem 0.65rem;
-  font: inherit;
-  font-size: 0.9rem;
-  outline: none;
-
-  &:focus {
-    border-color: var(--accent);
-  }
-`;
-
-const EditorInput = styled.input`
-  ${editorControlStyles}
-`;
-
-const EditorSelect = styled.select`
-  ${editorControlStyles}
-`;
-
-const EditorTextarea = styled.textarea`
-  ${editorControlStyles}
-  min-height: 6rem;
-  resize: vertical;
 `;
 
 const EditorError = styled.p`

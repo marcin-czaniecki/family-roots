@@ -1,30 +1,16 @@
-import { addDoc, collection, doc, serverTimestamp, Timestamp, writeBatch } from "firebase/firestore";
+import { addDoc, collection, doc, serverTimestamp, updateDoc, writeBatch } from "firebase/firestore";
 import { useEffect, useMemo, useState } from "react";
 import { useLoaderData, useRevalidator } from "react-router";
 import styled from "styled-components";
+import { PersonFormFields } from "@/components/PersonFormFields";
 import { PersonSearchSelect } from "@/components/PersonSearchSelect";
 import { matchesPersonQuery, personDatesOrId, personLabel, personName } from "@/entities/person/label";
 import type { Person } from "@/entities/person/types";
 import type { Relation } from "@/entities/relation/types";
+import { emptyPersonForm, type PersonFormValues, personFormPayload, personToForm, validatePersonForm } from "@/features/personForm";
 import { db } from "@/firebase";
 
-type PersonFormValues = {
-  biography: string;
-  firstName: string;
-  lastName: string;
-  middleNames: string;
-  birthDay: string;
-  birthMonth: string;
-  birthYear: string;
-  birthPlace: string;
-  birthSurname: string;
-  deathDay: string;
-  deathMonth: string;
-  deathYear: string;
-  deathPlace: string;
-  photoUrl: string;
-  sex: "male" | "female";
-};
+const PERSON_PAGE_SIZE = 20;
 
 type RelationFormValues = {
   type: "partner" | "parent";
@@ -35,24 +21,6 @@ type RelationFormValues = {
   parentshipId: string;
 };
 
-const emptyPersonForm = (): PersonFormValues => ({
-  biography: "",
-  firstName: "",
-  lastName: "",
-  middleNames: "",
-  birthDay: "",
-  birthMonth: "",
-  birthYear: "",
-  birthPlace: "",
-  birthSurname: "",
-  deathDay: "",
-  deathMonth: "",
-  deathYear: "",
-  deathPlace: "",
-  photoUrl: "",
-  sex: "female",
-});
-
 const emptyRelationForm = (): RelationFormValues => ({
   type: "partner",
   firstId: "",
@@ -61,46 +29,6 @@ const emptyRelationForm = (): RelationFormValues => ({
   personId: "",
   parentshipId: "",
 });
-
-function parseOptionalInt(value: string): number | null {
-  if (!value.trim()) return null;
-  const n = Number(value);
-  return Number.isFinite(n) ? n : null;
-}
-
-function buildPartialDate(day: string, month: string, year: string) {
-  const y = parseOptionalInt(year);
-  if (y === null) return null;
-  return {
-    day: parseOptionalInt(day),
-    month: parseOptionalInt(month),
-    year: y,
-  };
-}
-
-function toPersonPayload(form: PersonFormValues) {
-  const middleNames = form.middleNames
-    .split(",")
-    .map((name) => name.trim())
-    .filter(Boolean);
-
-  return {
-    biography: form.biography.trim() || null,
-    firstName: form.firstName.trim(),
-    lastName: form.lastName.trim(),
-    middleNames,
-    birth: buildPartialDate(form.birthDay, form.birthMonth, form.birthYear),
-    birthPlace: form.birthPlace.trim() || null,
-    birthSurname: form.birthSurname.trim() || null,
-    death: buildPartialDate(form.deathDay, form.deathMonth, form.deathYear),
-    deathPlace: form.deathPlace.trim() || null,
-    father: null,
-    mother: null,
-    photoUrl: form.photoUrl.trim() || null,
-    sex: form.sex === "male",
-    createdAt: serverTimestamp(),
-  };
-}
 
 function refId(value: { id?: string } | null | undefined) {
   return value?.id ?? null;
@@ -111,124 +39,159 @@ export function Dashboard() {
   const revalidator = useRevalidator();
   const [people, setPeople] = useState(loaderData.people);
   const [relations, setRelations] = useState(loaderData.relations);
+  const [selectedPersonId, setSelectedPersonId] = useState<string | null>(loaderData.people[0]?.id ?? null);
+  const [activeDrawer, setActiveDrawer] = useState<"person" | "relation" | null>(null);
+
+  useEffect(() => {
+    if (!activeDrawer) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setActiveDrawer(null);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [activeDrawer]);
 
   useEffect(() => {
     setPeople(loaderData.people);
     setRelations(loaderData.relations);
+    setSelectedPersonId((current) => (current && loaderData.people.some((person) => person.id === current) ? current : (loaderData.people[0]?.id ?? null)));
   }, [loaderData]);
 
   const peopleById = useMemo(() => new Map(people.map((person) => [person.id, person])), [people]);
-
-  const refresh = () => {
-    void revalidator.revalidate();
-  };
+  const selectedPerson = selectedPersonId ? (peopleById.get(selectedPersonId) ?? null) : null;
+  const refresh = () => void revalidator.revalidate();
 
   return (
     <Page>
       <Header>
-        <Title>Panel danych</Title>
-        <Subtitle>Osoby (people) i relacje (relations)</Subtitle>
+        <HeaderCopy>
+          <Title>Osoby</Title>
+          <Subtitle>
+            {people.length} osób · {relations.length} relacji
+          </Subtitle>
+        </HeaderCopy>
+        <HeaderActions>
+          <PrimaryAction type="button" onClick={() => setActiveDrawer("person")}>
+            Dodaj osobę
+          </PrimaryAction>
+          <SecondaryAction type="button" onClick={() => setActiveDrawer("relation")}>
+            Dodaj relację
+          </SecondaryAction>
+        </HeaderActions>
       </Header>
 
-      <Section>
-        <SectionHeading>Osoby</SectionHeading>
-        <Layout>
-          <PersonForm
-            onCreated={(person) => {
-              setPeople((prev) => [...prev, person]);
+      <PeopleWorkspace>
+        <PersonList
+          people={people}
+          relations={relations}
+          selectedPersonId={selectedPersonId}
+          onSelect={setSelectedPersonId}
+          onDeleted={(personId, nextRelations) => {
+            const nextPeople = people
+              .filter((person) => person.id !== personId)
+              .map((person) => ({
+                ...person,
+                father: person.father?.id === personId ? null : person.father,
+                mother: person.mother?.id === personId ? null : person.mother,
+              }));
+            setPeople(nextPeople);
+            setRelations(nextRelations);
+            setSelectedPersonId((current) => (current === personId ? (nextPeople[0]?.id ?? null) : current));
+            refresh();
+          }}
+        />
+        {selectedPerson ? (
+          <PersonEditor
+            key={selectedPerson.id}
+            person={selectedPerson}
+            onSaved={(updatedPerson) => {
+              setPeople((current) => current.map((person) => (person.id === updatedPerson.id ? updatedPerson : person)));
               refresh();
             }}
           />
-          <PersonList
-            people={people}
-            relations={relations}
-            onDeleted={(personId, nextRelations) => {
-              setPeople((prev) =>
-                prev
-                  .filter((person) => person.id !== personId)
-                  .map((person) => ({
-                    ...person,
-                    father: person.father?.id === personId ? null : person.father,
-                    mother: person.mother?.id === personId ? null : person.mother,
-                  })),
-              );
-              setRelations(nextRelations);
-              refresh();
-            }}
-          />
-        </Layout>
-      </Section>
+        ) : (
+          <EmptyEditor>
+            <EmptyEditorTitle>Nie wybrano osoby</EmptyEditorTitle>
+          </EmptyEditor>
+        )}
+      </PeopleWorkspace>
 
-      <Section>
-        <SectionHeading>Relacje</SectionHeading>
-        <Layout>
-          <RelationForm
-            people={people}
-            relations={relations}
-            onCreated={(relation) => {
-              setRelations((prev) => [...prev, relation]);
-              refresh();
-            }}
-          />
-          <RelationList
-            relations={relations}
-            peopleById={peopleById}
-            onDeleted={(nextRelations) => {
-              setRelations(nextRelations);
-              refresh();
-            }}
-          />
-        </Layout>
-      </Section>
+      <RelationsSection>
+        <RelationsHeader>
+          <div>
+            <SectionHeading>Relacje</SectionHeading>
+            <SectionDescription>{relations.length} rekordów wykorzystywanych przez drzewo</SectionDescription>
+          </div>
+        </RelationsHeader>
+        <RelationList
+          relations={relations}
+          peopleById={peopleById}
+          onDeleted={(nextRelations) => {
+            setRelations(nextRelations);
+            refresh();
+          }}
+        />
+      </RelationsSection>
+
+      {activeDrawer ? (
+        <DrawerBackdrop onMouseDown={() => setActiveDrawer(null)}>
+          <DrawerPanel
+            role="dialog"
+            aria-modal="true"
+            aria-label={activeDrawer === "person" ? "Dodaj osobę" : "Dodaj relację"}
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            {activeDrawer === "person" ? (
+              <PersonForm
+                onCancel={() => setActiveDrawer(null)}
+                onCreated={(personId) => {
+                  setSelectedPersonId(personId);
+                  setActiveDrawer(null);
+                  refresh();
+                }}
+              />
+            ) : (
+              <RelationForm
+                people={people}
+                relations={relations}
+                onCancel={() => setActiveDrawer(null)}
+                onCreated={(relation) => {
+                  setRelations((current) => [...current, relation]);
+                  setActiveDrawer(null);
+                  refresh();
+                }}
+              />
+            )}
+          </DrawerPanel>
+        </DrawerBackdrop>
+      ) : null}
     </Page>
   );
 }
-
-function PersonForm({ onCreated }: { onCreated: (person: Person) => void }) {
+function PersonForm({ onCreated, onCancel }: { onCreated: (personId: string) => void; onCancel: () => void }) {
   const [form, setForm] = useState<PersonFormValues>(emptyPersonForm);
-  const [status, setStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [status, setStatus] = useState<"idle" | "saving" | "error">("idle");
   const [error, setError] = useState<string | null>(null);
 
-  const update = <K extends keyof PersonFormValues>(key: K, value: PersonFormValues[K]) => {
-    setForm((prev) => ({ ...prev, [key]: value }));
-    if (status !== "idle") {
-      setStatus("idle");
-      setError(null);
-    }
-  };
-
-  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    if (!form.firstName.trim() || !form.lastName.trim()) {
+  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const validationError = validatePersonForm(form);
+    if (validationError) {
       setStatus("error");
-      setError("Imię i nazwisko są wymagane.");
+      setError(validationError);
       return;
     }
 
     setStatus("saving");
     setError(null);
     try {
-      const payload = toPersonPayload(form);
-      const ref = await addDoc(collection(db, "people"), payload);
-      onCreated({
-        id: ref.id,
-        biography: payload.biography,
-        firstName: payload.firstName,
-        lastName: payload.lastName,
-        middleNames: payload.middleNames,
-        birth: payload.birth as Person["birth"],
-        birthPlace: payload.birthPlace,
-        birthSurname: payload.birthSurname,
-        death: payload.death as Person["death"],
-        deathPlace: payload.deathPlace,
+      const reference = await addDoc(collection(db, "people"), {
+        ...personFormPayload(form),
         father: null,
         mother: null,
-        photoUrl: payload.photoUrl,
-        sex: payload.sex,
-        createdAt: Timestamp.now(),
+        createdAt: serverTimestamp(),
       });
-      setForm(emptyPersonForm());
-      setStatus("saved");
+      onCreated(reference.id);
     } catch (err) {
       setStatus("error");
       setError(err instanceof Error ? err.message : "Nie udało się zapisać osoby.");
@@ -236,111 +199,112 @@ function PersonForm({ onCreated }: { onCreated: (person: Person) => void }) {
   };
 
   return (
-    <Card as="form" onSubmit={handleSubmit}>
-      <CardTitle>Nowa osoba</CardTitle>
-      <CardHint>Zapis do Firestore → people</CardHint>
-
-      <FieldGrid>
-        <Field>
-          <Label htmlFor="firstName">Imię *</Label>
-          <Input id="firstName" value={form.firstName} onChange={(e) => update("firstName", e.target.value)} required />
-        </Field>
-        <Field>
-          <Label htmlFor="lastName">Nazwisko *</Label>
-          <Input id="lastName" value={form.lastName} onChange={(e) => update("lastName", e.target.value)} required />
-        </Field>
-        <Field $span={2}>
-          <Label htmlFor="middleNames">Drugie imiona</Label>
-          <Input id="middleNames" placeholder="oddzielone przecinkami" value={form.middleNames} onChange={(e) => update("middleNames", e.target.value)} />
-        </Field>
-        <Field>
-          <Label htmlFor="birthSurname">Nazwisko rodowe</Label>
-          <Input id="birthSurname" value={form.birthSurname} onChange={(e) => update("birthSurname", e.target.value)} />
-        </Field>
-        <Field>
-          <Label htmlFor="sex">Płeć</Label>
-          <Select id="sex" value={form.sex} onChange={(e) => update("sex", e.target.value as "male" | "female")}>
-            <option value="female">Kobieta</option>
-            <option value="male">Mężczyzna</option>
-          </Select>
-        </Field>
-      </FieldGrid>
-
-      <SectionLabel>Urodzenie</SectionLabel>
-      <FieldGrid>
-        <Field>
-          <Label htmlFor="birthDay">Dzień</Label>
-          <Input id="birthDay" inputMode="numeric" placeholder="dd" value={form.birthDay} onChange={(e) => update("birthDay", e.target.value)} />
-        </Field>
-        <Field>
-          <Label htmlFor="birthMonth">Miesiąc</Label>
-          <Input id="birthMonth" inputMode="numeric" placeholder="mm" value={form.birthMonth} onChange={(e) => update("birthMonth", e.target.value)} />
-        </Field>
-        <Field>
-          <Label htmlFor="birthYear">Rok</Label>
-          <Input id="birthYear" inputMode="numeric" placeholder="rrrr" value={form.birthYear} onChange={(e) => update("birthYear", e.target.value)} />
-        </Field>
-        <Field>
-          <Label htmlFor="birthPlace">Miejsce</Label>
-          <Input id="birthPlace" value={form.birthPlace} onChange={(e) => update("birthPlace", e.target.value)} />
-        </Field>
-      </FieldGrid>
-
-      <SectionLabel>Śmierć</SectionLabel>
-      <FieldGrid>
-        <Field>
-          <Label htmlFor="deathDay">Dzień</Label>
-          <Input id="deathDay" inputMode="numeric" placeholder="dd" value={form.deathDay} onChange={(e) => update("deathDay", e.target.value)} />
-        </Field>
-        <Field>
-          <Label htmlFor="deathMonth">Miesiąc</Label>
-          <Input id="deathMonth" inputMode="numeric" placeholder="mm" value={form.deathMonth} onChange={(e) => update("deathMonth", e.target.value)} />
-        </Field>
-        <Field>
-          <Label htmlFor="deathYear">Rok</Label>
-          <Input id="deathYear" inputMode="numeric" placeholder="rrrr" value={form.deathYear} onChange={(e) => update("deathYear", e.target.value)} />
-        </Field>
-        <Field>
-          <Label htmlFor="deathPlace">Miejsce</Label>
-          <Input id="deathPlace" value={form.deathPlace} onChange={(e) => update("deathPlace", e.target.value)} />
-        </Field>
-      </FieldGrid>
-
-      <FieldGrid>
-        <Field $span={2}>
-          <Label htmlFor="photoUrl">URL zdjęcia</Label>
-          <Input id="photoUrl" type="url" placeholder="https://…" value={form.photoUrl} onChange={(e) => update("photoUrl", e.target.value)} />
-        </Field>
-        <Field $span={2}>
-          <Label htmlFor="biography">Biografia</Label>
-          <Textarea id="biography" rows={4} value={form.biography} onChange={(e) => update("biography", e.target.value)} />
-        </Field>
-      </FieldGrid>
-
+    <DrawerForm onSubmit={handleSubmit}>
+      <DrawerHeader>
+        <div>
+          <CardTitle>Dodaj osobę</CardTitle>
+          <CardHint>Dane nowego członka rodziny</CardHint>
+        </div>
+        <DrawerClose type="button" onClick={onCancel} aria-label="Zamknij formularz" title="Zamknij">
+          ×
+        </DrawerClose>
+      </DrawerHeader>
+      <PersonFormFields value={form} onChange={setForm} idPrefix="dashboard-new-person" autoFocus />
       <Actions>
         <Submit type="submit" disabled={status === "saving"}>
           {status === "saving" ? "Zapisywanie…" : "Dodaj osobę"}
         </Submit>
-        {status === "saved" ? <Status $ok>Zapisano</Status> : null}
+        <CancelAction type="button" onClick={onCancel} disabled={status === "saving"}>
+          Anuluj
+        </CancelAction>
         {status === "error" && error ? <Status>{error}</Status> : null}
       </Actions>
-    </Card>
+    </DrawerForm>
   );
 }
 
+function PersonEditor({ person, onSaved }: { person: Person; onSaved: (person: Person) => void }) {
+  const [form, setForm] = useState(() => personToForm(person));
+  const [status, setStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setForm(personToForm(person));
+    setStatus("idle");
+    setError(null);
+  }, [person]);
+
+  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const validationError = validatePersonForm(form);
+    if (validationError) {
+      setStatus("error");
+      setError(validationError);
+      return;
+    }
+
+    setStatus("saving");
+    setError(null);
+    try {
+      const payload = personFormPayload(form);
+      await updateDoc(doc(db, "people", person.id), { ...payload, updatedAt: serverTimestamp() });
+      onSaved({
+        ...person,
+        ...payload,
+        birth: payload.birth as Person["birth"],
+        death: payload.death as Person["death"],
+      });
+      setStatus("saved");
+    } catch (err) {
+      setStatus("error");
+      setError(err instanceof Error ? err.message : "Nie udało się zaktualizować osoby.");
+    }
+  };
+
+  return (
+    <EditorPanel as="form" onSubmit={handleSubmit}>
+      <EditorPanelHeader>
+        <div>
+          <CardTitle>Edytuj osobę</CardTitle>
+          <CardHint>{personName(person)}</CardHint>
+        </div>
+        <PersonId>{person.id}</PersonId>
+      </EditorPanelHeader>
+      <PersonFormFields value={form} onChange={setForm} idPrefix={`dashboard-edit-${person.id}`} />
+      <Actions>
+        <Submit type="submit" disabled={status === "saving"}>
+          {status === "saving" ? "Zapisywanie…" : "Zapisz zmiany"}
+        </Submit>
+        {status === "saved" ? <Status $ok>Zapisano</Status> : null}
+        {status === "error" && error ? <Status>{error}</Status> : null}
+      </Actions>
+    </EditorPanel>
+  );
+}
 function PersonList({
   people,
   relations,
+  selectedPersonId,
+  onSelect,
   onDeleted,
 }: {
   people: Person[];
   relations: Relation[];
+  selectedPersonId: string | null;
+  onSelect: (personId: string) => void;
   onDeleted: (personId: string, nextRelations: Relation[]) => void;
 }) {
   const [query, setQuery] = useState("");
   const [deletingPersonId, setDeletingPersonId] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
-  const filtered = useMemo(() => people.filter((person) => matchesPersonQuery(person, query)), [people, query]);
+  const [page, setPage] = useState(0);
+  const filtered = useMemo(
+    () => people.filter((person) => matchesPersonQuery(person, query)).sort((first, second) => personName(first).localeCompare(personName(second), "pl")),
+    [people, query],
+  );
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PERSON_PAGE_SIZE));
+  const currentPage = Math.min(page, totalPages - 1);
+  const visiblePeople = filtered.slice(currentPage * PERSON_PAGE_SIZE, (currentPage + 1) * PERSON_PAGE_SIZE);
 
   const handleDelete = async (person: Person) => {
     const deletedPartnerIds = new Set(
@@ -442,27 +406,35 @@ function PersonList({
         {filtered.length}
         {query.trim() ? ` z ${people.length}` : ""} rekordów
       </CardHint>
-      <ListSearch type="search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Filtruj listę (imię, data, id)…" />
+      <ListSearch
+        type="search"
+        value={query}
+        onChange={(event) => {
+          setQuery(event.target.value);
+          setPage(0);
+        }}
+        placeholder="Szukaj po imieniu, dacie, miejscu lub ID…"
+      />
       {deleteError ? <DeleteStatus>{deleteError}</DeleteStatus> : null}
       {people.length === 0 ? (
-        <Empty>Brak osób w kolekcji people.</Empty>
+        <Empty>Brak osób.</Empty>
       ) : filtered.length === 0 ? (
         <Empty>Brak wyników dla „{query.trim()}”.</Empty>
       ) : (
         <List>
-          {filtered.map((person) => {
+          {visiblePeople.map((person) => {
             const hint = personDatesOrId(person);
             return (
-              <ListItem key={person.id}>
+              <ListItem key={person.id} $selected={person.id === selectedPersonId}>
                 <ListItemRow>
-                  <ListItemContent>
+                  <PersonSelectButton type="button" onClick={() => onSelect(person.id)} aria-pressed={person.id === selectedPersonId}>
                     <ItemTitle>
                       {personName(person)}
                       {" — "}
                       <PersonHint>{hint.text}</PersonHint>
                     </ItemTitle>
                     <ItemMeta>{[person.birthPlace, person.deathPlace ? `† ${person.deathPlace}` : null].filter(Boolean).join(" · ") || "—"}</ItemMeta>
-                  </ListItemContent>
+                  </PersonSelectButton>
                   <DeleteButton
                     type="button"
                     disabled={deletingPersonId !== null}
@@ -477,10 +449,38 @@ function PersonList({
           })}
         </List>
       )}
+      {filtered.length > PERSON_PAGE_SIZE ? (
+        <ListPagination aria-label="Strony listy osób">
+          <PageButton type="button" disabled={currentPage === 0} onClick={() => setPage((current) => Math.max(0, current - 1))} aria-label="Poprzednia strona">
+            ‹
+          </PageButton>
+          <PageStatus>
+            {currentPage + 1} / {totalPages}
+          </PageStatus>
+          <PageButton
+            type="button"
+            disabled={currentPage === totalPages - 1}
+            onClick={() => setPage((current) => Math.min(totalPages - 1, current + 1))}
+            aria-label="Następna strona"
+          >
+            ›
+          </PageButton>
+        </ListPagination>
+      ) : null}
     </Card>
   );
 }
-function RelationForm({ people, relations, onCreated }: { people: Person[]; relations: Relation[]; onCreated: (relation: Relation) => void }) {
+function RelationForm({
+  people,
+  relations,
+  onCreated,
+  onCancel,
+}: {
+  people: Person[];
+  relations: Relation[];
+  onCreated: (relation: Relation) => void;
+  onCancel: () => void;
+}) {
   const [form, setForm] = useState<RelationFormValues>(emptyRelationForm);
   const [status, setStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [error, setError] = useState<string | null>(null);
@@ -577,9 +577,16 @@ function RelationForm({ people, relations, onCreated }: { people: Person[]; rela
   };
 
   return (
-    <Card as="form" onSubmit={handleSubmit}>
-      <CardTitle>Nowa relacja</CardTitle>
-      <CardHint>Zapis do Firestore → relations</CardHint>
+    <DrawerForm onSubmit={handleSubmit}>
+      <DrawerHeader>
+        <div>
+          <CardTitle>Dodaj relację</CardTitle>
+          <CardHint>Powiązanie osób w drzewie</CardHint>
+        </div>
+        <DrawerClose type="button" onClick={onCancel} aria-label="Zamknij formularz" title="Zamknij">
+          ×
+        </DrawerClose>
+      </DrawerHeader>
 
       <FieldGrid>
         <Field $span={2}>
@@ -665,11 +672,14 @@ function RelationForm({ people, relations, onCreated }: { people: Person[]; rela
         <Submit type="submit" disabled={status === "saving" || people.length === 0}>
           {status === "saving" ? "Zapisywanie…" : "Dodaj relację"}
         </Submit>
+        <CancelAction type="button" onClick={onCancel} disabled={status === "saving"}>
+          Anuluj
+        </CancelAction>
         {people.length === 0 ? <Status>Najpierw dodaj osoby.</Status> : null}
         {status === "saved" ? <Status $ok>Zapisano</Status> : null}
         {status === "error" && error ? <Status>{error}</Status> : null}
       </Actions>
-    </Card>
+    </DrawerForm>
   );
 }
 
@@ -737,7 +747,7 @@ function RelationList({
       <CardHint>{relations.length} rekordów</CardHint>
       {deleteError ? <DeleteStatus>{deleteError}</DeleteStatus> : null}
       {relations.length === 0 ? (
-        <Empty>Brak relacji w kolekcji relations.</Empty>
+        <Empty>Brak relacji.</Empty>
       ) : (
         <List>
           {relations.map((relation) => (
@@ -793,8 +803,193 @@ const Page = styled.div`
 `;
 
 const Header = styled.header`
-  max-width: 1100px;
-  margin: 0 auto 1.75rem;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1.5rem;
+  max-width: 1280px;
+  margin: 0 auto 1.5rem;
+  padding-bottom: 1.25rem;
+  border-bottom: 1px solid var(--line);
+
+  @media (max-width: 720px) {
+    flex-direction: column;
+  }
+`;
+
+const HeaderCopy = styled.div`
+  max-width: 44rem;
+`;
+
+const HeaderActions = styled.div`
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+`;
+
+const actionStyles = `
+  min-height: 2.5rem;
+  padding: 0.55rem 0.9rem;
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+`;
+
+const PrimaryAction = styled.button`
+  ${actionStyles}
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+`;
+
+const SecondaryAction = styled.button`
+  ${actionStyles}
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--ink);
+
+  &:hover {
+    border-color: var(--accent);
+  }
+`;
+
+const PeopleWorkspace = styled.section`
+  display: grid;
+  grid-template-columns: minmax(19rem, 0.7fr) minmax(0, 1.3fr);
+  align-items: start;
+  gap: 1rem;
+  max-width: 1280px;
+  margin: 0 auto 2rem;
+
+  @media (max-width: 900px) {
+    grid-template-columns: 1fr;
+  }
+`;
+
+const EditorPanel = styled.div`
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-top: 3px solid #6b4f3a;
+  background: var(--paper);
+  padding: 1.25rem;
+  box-shadow: 0 1px 0 rgba(28, 42, 34, 0.06);
+`;
+
+const EditorPanelHeader = styled.header`
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+  padding-bottom: 0.8rem;
+  border-bottom: 1px solid var(--line);
+`;
+
+const PersonId = styled.code`
+  max-width: 45%;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.7rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+`;
+
+const EmptyEditor = styled.div`
+  min-height: 18rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed var(--line);
+  background: rgba(247, 244, 239, 0.55);
+  padding: 2rem;
+  text-align: center;
+`;
+
+const EmptyEditorTitle = styled.h2`
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 600;
+`;
+
+const RelationsSection = styled.section`
+  max-width: 1280px;
+  margin: 0 auto;
+`;
+
+const RelationsHeader = styled.header`
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+`;
+
+const SectionHeading = styled.h2`
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 600;
+`;
+const SectionDescription = styled.p`
+  margin: 0.2rem 0 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+`;
+
+const DrawerBackdrop = styled.div`
+  position: fixed;
+  z-index: 90;
+  top: 4rem;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  justify-content: flex-end;
+  background: rgba(28, 42, 34, 0.28);
+`;
+
+const DrawerPanel = styled.aside`
+  width: min(44rem, 100vw);
+  height: 100%;
+  overflow: auto;
+  border-left: 1px solid var(--line);
+  background: var(--paper);
+  box-shadow: -12px 0 32px rgba(28, 42, 34, 0.18);
+`;
+
+const DrawerForm = styled.form`
+  padding: 1.25rem;
+`;
+
+const DrawerHeader = styled.header`
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+  padding-bottom: 0.8rem;
+  border-bottom: 1px solid var(--line);
+`;
+
+const DrawerClose = styled.button`
+  width: 2.25rem;
+  height: 2.25rem;
+  flex: none;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--muted);
+  font: inherit;
+  font-size: 1.25rem;
+  line-height: 1;
+  cursor: pointer;
+
+  &:hover,
+  &:focus-visible {
+    border-color: var(--accent);
+    color: var(--ink);
+    outline: none;
+  }
 `;
 
 const Title = styled.h1`
@@ -807,27 +1002,6 @@ const Subtitle = styled.p`
   margin: 0.35rem 0 0;
   color: var(--muted);
   font-size: 0.95rem;
-`;
-
-const Section = styled.section`
-  max-width: 1100px;
-  margin: 0 auto 2rem;
-`;
-
-const SectionHeading = styled.h2`
-  margin: 0 0 0.85rem;
-  font-size: 1.2rem;
-  font-weight: 500;
-`;
-
-const Layout = styled.div`
-  display: grid;
-  grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.8fr);
-  gap: 1.25rem;
-
-  @media (max-width: 900px) {
-    grid-template-columns: 1fr;
-  }
 `;
 
 const Card = styled.div`
@@ -912,18 +1086,8 @@ const inputStyles = `
   }
 `;
 
-const Input = styled.input`
-  ${inputStyles}
-`;
-
 const Select = styled.select`
   ${inputStyles}
-`;
-
-const Textarea = styled.textarea`
-  ${inputStyles}
-  resize: vertical;
-  min-height: 6rem;
 `;
 
 const Actions = styled.div`
@@ -954,6 +1118,20 @@ const Submit = styled.button`
   }
 `;
 
+const CancelAction = styled.button`
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--ink);
+  padding: 0.65rem 1rem;
+  font: inherit;
+  font-size: 0.9rem;
+  cursor: pointer;
+
+  &:disabled {
+    opacity: 0.55;
+    cursor: default;
+  }
+`;
 const Status = styled.span<{ $ok?: boolean }>`
   font-size: 0.85rem;
   color: ${({ $ok }) => ($ok ? "var(--accent)" : "#8b3a2a")};
@@ -975,10 +1153,10 @@ const ListSearch = styled.input`
   margin-bottom: 0.75rem;
 `;
 
-const ListItem = styled.li`
+const ListItem = styled.li<{ $selected?: boolean }>`
   padding: 0.65rem 0.75rem;
-  border: 1px solid var(--line);
-  background: #fff;
+  border: 1px solid ${({ $selected }) => ($selected ? "var(--accent)" : "var(--line)")};
+  background: ${({ $selected }) => ($selected ? "#e8efe9" : "#fff")};
 `;
 
 const ListItemRow = styled.div`
@@ -988,6 +1166,21 @@ const ListItemRow = styled.div`
   gap: 0.75rem;
 `;
 
+const PersonSelectButton = styled.button`
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: var(--ink);
+  padding: 0;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+
+  &:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+  }
+`;
 const ListItemContent = styled.div`
   min-width: 0;
 `;
@@ -1021,6 +1214,39 @@ const DeleteButton = styled.button`
   }
 `;
 
+const ListPagination = styled.nav`
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.65rem;
+  margin-top: 0.85rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--line);
+`;
+
+const PageButton = styled.button`
+  width: 2rem;
+  height: 2rem;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+  font-size: 1.2rem;
+  cursor: pointer;
+
+  &:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+`;
+
+const PageStatus = styled.span`
+  min-width: 3.5rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+`;
 const DeleteStatus = styled.p`
   margin: 0 0 0.75rem;
   color: #8b3a2a;
