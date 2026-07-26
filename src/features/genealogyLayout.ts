@@ -297,10 +297,7 @@ function upsertPersonNode(nodes: Node[], placedPeople: Set<string>, person: Pers
   const nodeId = placedPeople.has(person.id) && partnerRelId ? `${person.id}~${partnerRelId}` : person.id;
 
   const existing = nodes.find((node) => node.id === nodeId);
-  if (existing) {
-    existing.position = position;
-    return nodeId;
-  }
+  if (existing) return nodeId;
 
   placedPeople.add(person.id);
   nodes.push(getPersonNode(nodeId, person, position));
@@ -308,8 +305,10 @@ function upsertPersonNode(nodes: Node[], placedPeople: Set<string>, person: Pers
 }
 
 function addDescentEdge(sourceId: string, childId: string, lane: DescentEdgeData["lane"], edges: Edge[]) {
+  const id = `${sourceId}->${childId}`;
+  if (edges.some((edge) => edge.id === id)) return;
   edges.push({
-    id: `${sourceId}->${childId}`,
+    id,
     source: sourceId,
     target: childId,
     sourceHandle: "child",
@@ -322,8 +321,10 @@ function addDescentEdge(sourceId: string, childId: string, lane: DescentEdgeData
 function addPartnerEdge(personNodeId: string, relationId: string, side: "left" | "right", edges: Edge[]) {
   const sourceHandle = side === "left" ? "partner-first" : "partner-second";
   const targetHandle = side === "left" ? "partner-first" : "partner-second";
+  const id = `${personNodeId}->${relationId}`;
+  if (edges.some((edge) => edge.id === id)) return;
   edges.push({
-    id: `${personNodeId}->${relationId}`,
+    id,
     source: personNodeId,
     target: relationId,
     sourceHandle,
@@ -355,8 +356,11 @@ async function placeKidsForPartnership(
   resolvePerson: PersonResolver,
   centerBias: KidCenterBias = "center",
 ) {
-  const kids = childrenOf(relations, partnerRel);
+  const kids = childrenOf(relations, partnerRel).filter((child) => !placedRelations.has(child.id));
   if (kids.length === 0) return;
+
+  // Claim parent relations before async recursion so another partnership cannot place the same child again.
+  for (const child of kids) placedRelations.add(child.id);
 
   const kidsWithPeople: KidPlacement[] = await Promise.all(
     kids.map(async (child) => ({

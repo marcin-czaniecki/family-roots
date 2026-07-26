@@ -19,14 +19,24 @@ export function childrenOf(relations: Relation[], partnerRel: PartnerRelation): 
     if (!hasParentship(r)) {
       const parents = new Set([partnerRel.first.id, partnerRel.second?.id].filter(Boolean) as string[]);
       const linked = [r.first?.id, r.second?.id].filter(Boolean) as string[];
-      return linked.length > 0 && linked.every((id) => parents.has(id));
+      if (linked.length === 0 || !linked.every((id) => parents.has(id))) return false;
+      if (linked.length > 1) return true;
+
+      // A direct child of one known parent must belong to one layout branch only.
+      const ownerId = relations
+        .filter((candidate): candidate is PartnerRelation => isPartner(candidate) && (candidate.first.id === linked[0] || candidate.second?.id === linked[0]))
+        .map((candidate) => candidate.id)
+        .sort((first, second) => first.localeCompare(second))[0];
+      return ownerId === partnerRel.id;
     }
     return false;
   });
 }
 
 export function partnersOf(relations: Relation[], personId: string, excludeRelationId?: string): PartnerRelation[] {
-  return relations.filter((r): r is PartnerRelation => isPartner(r) && r.id !== excludeRelationId && (r.first.id === personId || r.second?.id === personId));
+  return relations
+    .filter((r): r is PartnerRelation => isPartner(r) && r.id !== excludeRelationId && (r.first.id === personId || r.second?.id === personId))
+    .sort((first, second) => first.id.localeCompare(second.id));
 }
 
 export function partnerOf(relations: Relation[], personId: string, excludeRelationId?: string) {
