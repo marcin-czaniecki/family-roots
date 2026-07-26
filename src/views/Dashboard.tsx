@@ -1,4 +1,4 @@
-import { addDoc, collection, doc, serverTimestamp, updateDoc, writeBatch } from "firebase/firestore";
+import { addDoc, collection, doc, serverTimestamp, updateDoc } from "firebase/firestore";
 import { useEffect, useMemo, useState } from "react";
 import { useLoaderData, useRevalidator } from "react-router";
 import styled from "styled-components";
@@ -9,6 +9,7 @@ import type { Person } from "@/entities/person/types";
 import type { Relation } from "@/entities/relation/types";
 import { deletePersonWithRelations, getPersonDeletionImpact } from "@/features/personDeletion";
 import { emptyPersonForm, type PersonFormValues, personFormPayload, personToForm, validatePersonForm } from "@/features/personForm";
+import { deleteRelationWithDependents, getRelationDeletionImpact } from "@/features/relationDeletion";
 import { db } from "@/firebase";
 
 const PERSON_PAGE_SIZE = 20;
@@ -677,10 +678,9 @@ function RelationList({
   };
 
   const handleDelete = async (relation: Relation) => {
-    const dependentParents =
-      relation.type === "partner" ? relations.filter((candidate) => candidate.type === "parent" && refId(candidate.parentship) === relation.id) : [];
-    const rootWarning = relation.root ? "\n\nUwaga: to relacja root. Po jej usunięciu trzeba wskazać nowy punkt startowy drzewa." : "";
-    const dependentSummary = dependentParents.length > 0 ? `\nPowiązania parentship do wyczyszczenia: ${dependentParents.length}.` : "";
+    const impact = getRelationDeletionImpact(relation, relations);
+    const rootWarning = impact.deletesRootRelation ? "\n\nUwaga: to relacja root. Po jej usunięciu trzeba wskazać nowy punkt startowy drzewa." : "";
+    const dependentSummary = impact.parentshipsToClear > 0 ? `\nPowiązania parentship do wyczyszczenia: ${impact.parentshipsToClear}.` : "";
 
     if (!window.confirm(`Usunąć relację „${relation.type}”?${dependentSummary}${rootWarning}\n\nTej operacji nie można cofnąć.`)) return;
 
@@ -688,19 +688,8 @@ function RelationList({
     setDeleteError(null);
 
     try {
-      const batch = writeBatch(db);
-      for (const dependent of dependentParents) {
-        batch.update(doc(db, "relations", dependent.id), { parentship: null });
-      }
-      batch.delete(doc(db, "relations", relation.id));
-      await batch.commit();
-
-      const dependentIds = new Set(dependentParents.map((dependent) => dependent.id));
-      onDeleted(
-        relations
-          .filter((candidate) => candidate.id !== relation.id)
-          .map((candidate) => (candidate.type === "parent" && dependentIds.has(candidate.id) ? { ...candidate, parentship: null } : candidate)),
-      );
+      const result = await deleteRelationWithDependents(relation, relations);
+      onDeleted(result.relations);
     } catch (err) {
       setDeleteError(err instanceof Error ? err.message : "Nie udało się usunąć relacji.");
     } finally {

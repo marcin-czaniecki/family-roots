@@ -12,6 +12,7 @@ import type { PartnerRelation, Relation } from "@/entities/relation/types";
 import { edgeTypes, nodeTypes } from "@/features/genealogyLayout";
 import { deletePersonWithRelations, getPersonDeletionImpact } from "@/features/personDeletion";
 import { emptyPersonForm, type PersonFormValues, personFormPayload, personToForm, validatePersonForm } from "@/features/personForm";
+import { deleteRelationWithDependents, getRelationDeletionImpact } from "@/features/relationDeletion";
 import { useGenealogyRealtime } from "@/features/useGenealogyRealtime";
 import { db } from "@/firebase";
 
@@ -192,6 +193,9 @@ export function Home() {
     });
     setEditingPerson(null);
   };
+  const deleteRelation = async (relation: Relation) => {
+    await deleteRelationWithDependents(relation, relations);
+  };
   const deletePerson = async (person: Person) => {
     const impact = getPersonDeletionImpact(person, people, relations);
     const details = [
@@ -299,9 +303,12 @@ export function Home() {
       {editingPerson ? (
         <EditPersonEditor
           person={editingPerson}
+          people={people}
+          relations={relations}
           onCancel={() => setEditingPerson(null)}
           onSave={(values) => savePerson(editingPerson.id, values)}
           onDelete={() => deletePerson(editingPerson)}
+          onDeleteRelation={deleteRelation}
         />
       ) : null}
     </Canvas>
@@ -420,22 +427,75 @@ function DiagramPersonSearch({ nodes }: { nodes: Node[] }) {
 }
 function EditPersonEditor({
   person,
+  people,
+  relations,
   onCancel,
   onSave,
   onDelete,
+  onDeleteRelation,
 }: {
   person: Person;
+  people: Person[];
+  relations: Relation[];
   onCancel: () => void;
   onSave: (values: PersonFormValues) => Promise<void>;
   onDelete: () => Promise<void>;
+  onDeleteRelation: (relation: Relation) => Promise<void>;
 }) {
+  const [activeTab, setActiveTab] = useState<"details" | "relations">("details");
   const [form, setForm] = useState(() => personToForm(person));
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [deletingRelationId, setDeletingRelationId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const peopleById = useMemo(() => new Map(people.map((candidate) => [candidate.id, candidate])), [people]);
+  const personRelations = useMemo(
+    () =>
+      relations.filter(
+        (relation) => relation.first.id === person.id || relation.second?.id === person.id || (relation.type === "parent" && relation.person.id === person.id),
+      ),
+    [person.id, relations],
+  );
+  const busy = saving || deleting || deletingRelationId !== null;
+
+  const personLabelById = (personId: string | null | undefined) => {
+    if (!personId) return "Nieznana osoba";
+    const candidate = peopleById.get(personId);
+    return candidate ? personName(candidate) : personId;
+  };
+
+  const describeRelation = (relation: Relation) => {
+    if (relation.type === "partner") {
+      const otherId = relation.first.id === person.id ? relation.second?.id : relation.first.id;
+      return { role: "Partner", description: personLabelById(otherId), parentDetails: null };
+    }
+
+    const personIsChild = relation.person.id === person.id;
+    const parents = [relation.first.id, relation.second?.id].filter(Boolean).map((personId) => personLabelById(personId));
+    const otherParentId = personIsChild ? relation.second?.id : relation.first.id === person.id ? relation.second?.id : relation.first.id;
+    const parentshipId = relation.parentship?.id;
+    const parentship = parentshipId ? relations.find((candidate) => candidate.type === "partner" && candidate.id === parentshipId) : null;
+    const parentshipPeople = parentship ? [parentship.first.id, parentship.second?.id].filter(Boolean).map((personId) => personLabelById(personId)) : [];
+
+    return {
+      role: personIsChild ? "Dziecko" : "Rodzic",
+      description: personIsChild ? `Rodzice: ${parents.join(" i ") || "brak danych"}` : `Dziecko: ${personLabelById(relation.person.id)}`,
+      parentDetails: {
+        hasSecondParent: Boolean(relation.second?.id),
+        secondParentText: `${personIsChild ? "Drugi rodzic" : "Drugi rodzic dziecka"}: ${otherParentId ? personLabelById(otherParentId) : "nieznany"}`,
+        hasParentship: Boolean(parentshipId),
+        parentshipText: parentshipId
+          ? parentship
+            ? `Para z parentship: ${parentshipPeople.join(" i ")}`
+            : `parentship: ${parentshipId} (brak relacji pary)`
+          : "Bez parentship - bezpośrednia relacja rodzic–dziecko",
+      },
+    };
+  };
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (activeTab !== "details") return;
     setError(null);
 
     const validationError = validatePersonForm(form);
@@ -465,6 +525,27 @@ function EditPersonEditor({
     }
   };
 
+  const handleDeleteRelation = async (relation: Relation) => {
+    const impact = getRelationDeletionImpact(relation, relations);
+    const description = describeRelation(relation);
+    const dependentSummary = impact.parentshipsToClear > 0 ? `\nPowiązania dzieci z parą do wyczyszczenia: ${impact.parentshipsToClear}.` : "";
+    const rootWarning = impact.deletesRootRelation
+      ? "\n\nUwaga: to relacja root. Jej usunięcie może ukryć całe drzewo do czasu wskazania nowej relacji root."
+      : "";
+    if (!window.confirm(`Usunąć relację „${description.role}: ${description.description}”?${dependentSummary}${rootWarning}\n\nTej operacji nie można cofnąć.`))
+      return;
+
+    setError(null);
+    setDeletingRelationId(relation.id);
+    try {
+      await onDeleteRelation(relation);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Nie udało się usunąć relacji.");
+    } finally {
+      setDeletingRelationId(null);
+    }
+  };
+
   return (
     <EditorDrawer className="nodrag nopan nowheel" onSubmit={handleSubmit}>
       <EditorHeader>
@@ -472,24 +553,106 @@ function EditPersonEditor({
           <EditorTitle>Edytuj osobę</EditorTitle>
           <EditorContext>{personName(person)}</EditorContext>
         </div>
-        <CloseButton type="button" onClick={onCancel} disabled={saving || deleting} aria-label="Zamknij formularz" title="Zamknij">
+        <CloseButton type="button" onClick={onCancel} disabled={busy} aria-label="Zamknij formularz" title="Zamknij">
           ×
         </CloseButton>
       </EditorHeader>
 
-      <PersonFormFields value={form} onChange={setForm} idPrefix="edit-person" autoFocus />
-      {error ? <EditorError>{error}</EditorError> : null}
-      <EditorActions>
-        <SaveButton type="submit" disabled={saving || deleting}>
-          {saving ? "Zapisywanie…" : "Zapisz zmiany"}
-        </SaveButton>
-        <CancelButton type="button" onClick={onCancel} disabled={saving || deleting}>
-          Anuluj
-        </CancelButton>
-        <DeletePersonButton type="button" onClick={() => void handleDelete()} disabled={saving || deleting}>
-          {deleting ? "Usuwanie…" : "Usuń osobę"}
-        </DeletePersonButton>
-      </EditorActions>
+      <EditorTabs role="tablist" aria-label="Edycja osoby">
+        <EditorTabButton
+          type="button"
+          role="tab"
+          aria-selected={activeTab === "details"}
+          aria-controls="person-details-panel"
+          $active={activeTab === "details"}
+          disabled={busy}
+          onClick={() => {
+            setActiveTab("details");
+            setError(null);
+          }}
+        >
+          Dane osoby
+        </EditorTabButton>
+        <EditorTabButton
+          type="button"
+          role="tab"
+          aria-selected={activeTab === "relations"}
+          aria-controls="person-relations-panel"
+          $active={activeTab === "relations"}
+          disabled={busy}
+          onClick={() => {
+            setActiveTab("relations");
+            setError(null);
+          }}
+        >
+          Relacje ({personRelations.length})
+        </EditorTabButton>
+      </EditorTabs>
+
+      {activeTab === "details" ? (
+        <div id="person-details-panel" role="tabpanel">
+          <PersonFormFields value={form} onChange={setForm} idPrefix="edit-person" autoFocus />
+          {error ? <EditorError>{error}</EditorError> : null}
+          <EditorActions>
+            <SaveButton type="submit" disabled={busy}>
+              {saving ? "Zapisywanie…" : "Zapisz zmiany"}
+            </SaveButton>
+            <CancelButton type="button" onClick={onCancel} disabled={busy}>
+              Anuluj
+            </CancelButton>
+            <DeletePersonButton type="button" onClick={() => void handleDelete()} disabled={busy}>
+              {deleting ? "Usuwanie…" : "Usuń osobę"}
+            </DeletePersonButton>
+          </EditorActions>
+        </div>
+      ) : (
+        <PersonRelationsPanel id="person-relations-panel" role="tabpanel">
+          {personRelations.length === 0 ? (
+            <RelationsEmpty>Ta osoba nie ma zapisanych relacji.</RelationsEmpty>
+          ) : (
+            <PersonRelationsList>
+              {personRelations.map((relation) => {
+                const description = describeRelation(relation);
+                return (
+                  <PersonRelationItem key={relation.id}>
+                    <PersonRelationContent>
+                      <PersonRelationHeading>
+                        <RelationRole $type={relation.type}>{description.role}</RelationRole>
+                        {relation.root ? <RelationRootBadge>root</RelationRootBadge> : null}
+                      </PersonRelationHeading>
+                      <PersonRelationDescription>{description.description}</PersonRelationDescription>
+                      {description.parentDetails ? (
+                        <ParentRelationDetails>
+                          <ParentRelationStatuses>
+                            <ParentRelationStatus $tone={description.parentDetails.hasSecondParent ? "positive" : "warning"}>
+                              {description.parentDetails.hasSecondParent ? "Dwoje rodziców" : "Jeden znany rodzic"}
+                            </ParentRelationStatus>
+                            <ParentRelationStatus $tone={description.parentDetails.hasParentship ? "linked" : "direct"}>
+                              {description.parentDetails.hasParentship ? "Z parentship" : "Bez parentship"}
+                            </ParentRelationStatus>
+                          </ParentRelationStatuses>
+                          <ParentRelationDetail>{description.parentDetails.secondParentText}</ParentRelationDetail>
+                          <ParentRelationDetail>{description.parentDetails.parentshipText}</ParentRelationDetail>
+                        </ParentRelationDetails>
+                      ) : null}
+                      <PersonRelationId>{relation.id}</PersonRelationId>
+                    </PersonRelationContent>
+                    <RelationDeleteButton
+                      type="button"
+                      disabled={busy}
+                      aria-label={`Usuń relację ${description.role}: ${description.description}`}
+                      onClick={() => void handleDeleteRelation(relation)}
+                    >
+                      {deletingRelationId === relation.id ? "Usuwanie…" : "Usuń"}
+                    </RelationDeleteButton>
+                  </PersonRelationItem>
+                );
+              })}
+            </PersonRelationsList>
+          )}
+          {error ? <EditorError>{error}</EditorError> : null}
+        </PersonRelationsPanel>
+      )}
     </EditorDrawer>
   );
 }
@@ -857,6 +1020,175 @@ const EditorHeader = styled.header`
   justify-content: space-between;
   gap: 1rem;
   margin-bottom: 0.85rem;
+`;
+
+const EditorTabs = styled.div`
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  margin-bottom: 1rem;
+  border-bottom: 1px solid var(--line);
+`;
+
+const EditorTabButton = styled.button<{ $active: boolean }>`
+  border: none;
+  border-bottom: 3px solid ${({ $active }) => ($active ? "var(--accent)" : "transparent")};
+  background: ${({ $active }) => ($active ? "#e8efe9" : "transparent")};
+  color: ${({ $active }) => ($active ? "var(--ink)" : "var(--muted)")};
+  padding: 0.65rem 0.5rem;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+
+  &:hover:not(:disabled) {
+    background: #eee8de;
+    color: var(--ink);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -3px;
+  }
+
+  &:disabled {
+    opacity: 0.55;
+    cursor: default;
+  }
+`;
+
+const PersonRelationsPanel = styled.div`
+  min-width: 0;
+`;
+
+const PersonRelationsList = styled.ul`
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+`;
+
+const PersonRelationItem = styled.li`
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.75rem;
+  border: 1px solid var(--line);
+  background: #fff;
+  padding: 0.7rem 0.75rem;
+`;
+
+const PersonRelationContent = styled.div`
+  min-width: 0;
+`;
+
+const PersonRelationHeading = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+`;
+
+const RelationRole = styled.span<{ $type: Relation["type"] }>`
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.35rem;
+  border: 1px solid ${({ $type }) => ($type === "partner" ? "#91aa9b" : "#c5b8a4")};
+  background: ${({ $type }) => ($type === "partner" ? "#e8efe9" : "#efe8dc")};
+  color: var(--ink);
+  padding: 0.1rem 0.4rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+`;
+
+const RelationRootBadge = styled.span`
+  color: #8b3a2a;
+  font-size: 0.7rem;
+  font-weight: 700;
+`;
+
+const PersonRelationDescription = styled.p`
+  margin: 0.35rem 0 0;
+  color: var(--ink);
+  font-size: 0.84rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+`;
+
+const ParentRelationDetails = styled.div`
+  margin-top: 0.55rem;
+  border-top: 1px solid #ded6ca;
+  padding-top: 0.5rem;
+`;
+
+const ParentRelationStatuses = styled.div`
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+`;
+
+const ParentRelationStatus = styled.span<{ $tone: "positive" | "warning" | "linked" | "direct" }>`
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.35rem;
+  border: 1px solid
+    ${({ $tone }) => ({ positive: "#91aa9b", warning: "#c88978", linked: "#93a6b0", direct: "#b9ad9b" })[$tone]};
+  background: ${({ $tone }) => ({ positive: "#e8efe9", warning: "#fff1ee", linked: "#e9eef2", direct: "#f1ede7" })[$tone]};
+  color: ${({ $tone }) => ($tone === "warning" ? "#8b3a2a" : "var(--ink)")};
+  padding: 0.1rem 0.4rem;
+  font-size: 0.68rem;
+  font-weight: 700;
+`;
+
+const ParentRelationDetail = styled.p`
+  margin: 0.35rem 0 0;
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+`;
+
+const PersonRelationId = styled.p`
+  margin: 0.25rem 0 0;
+  color: var(--muted);
+  font-size: 0.66rem;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+`;
+
+const RelationDeleteButton = styled.button`
+  border: 1px solid #b84332;
+  background: #fff;
+  color: #9f3023;
+  padding: 0.45rem 0.65rem;
+  font: inherit;
+  font-size: 0.76rem;
+  font-weight: 700;
+  cursor: pointer;
+
+  &:hover:not(:disabled) {
+    background: #9f3023;
+    color: #fff;
+  }
+
+  &:focus-visible {
+    outline: 2px solid #9f3023;
+    outline-offset: 2px;
+  }
+
+  &:disabled {
+    opacity: 0.55;
+    cursor: default;
+  }
+`;
+
+const RelationsEmpty = styled.p`
+  margin: 0;
+  border: 1px dashed var(--line);
+  color: var(--muted);
+  padding: 1rem;
+  font-size: 0.82rem;
+  text-align: center;
 `;
 
 const EditorTitle = styled.h2`
