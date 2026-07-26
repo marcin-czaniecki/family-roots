@@ -8,6 +8,7 @@ type Sex = boolean;
 type PersonNodeData = Person & {
   editMode?: boolean;
   onEdit?: (person: Person) => void;
+  showBirthSurname?: boolean;
 };
 
 const fadeIn = keyframes`
@@ -87,6 +88,14 @@ const Name = styled.h2`
   font-weight: 700;
   line-height: 1.2;
   color: var(--ink);
+  overflow-wrap: anywhere;
+`;
+const BirthSurname = styled.p`
+  margin: -0.35rem 0 0;
+  color: var(--accent);
+  font-size: 1.1rem;
+  font-weight: 600;
+  line-height: 1.2;
   overflow-wrap: anywhere;
 `;
 
@@ -231,6 +240,7 @@ export function PersonNode({ data: person }: { data: PersonNodeData }) {
   const lifespan = formatLifespan(person);
   const place = person.birthPlace || person.deathPlace;
   const biography = person.biography?.trim();
+  const birthSurname = person.birthSurname?.trim();
   const biographyId = `person-biography-${person.id}`;
   const growsUp = TREE_GROWS_UP;
   const parentSide = growsUp ? Position.Bottom : Position.Top;
@@ -262,6 +272,7 @@ export function PersonNode({ data: person }: { data: PersonNodeData }) {
         <Name>
           {person.firstName} {person.lastName}
         </Name>
+        {person.showBirthSurname && birthSurname ? <BirthSurname>Z domu {birthSurname}</BirthSurname> : null}
         {lifespan ? <Dates>{lifespan}</Dates> : null}
         {place ? <Place>{place}</Place> : null}
       </Body>

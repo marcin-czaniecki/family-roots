@@ -56,6 +56,7 @@ export function Home() {
   const { nodes: loadedNodes, edges: loadedEdges, people: loadedPeople, relations: loadedRelations } = useLoaderData<GenealogyLoaderData>();
   const { graph, people, relations } = useGenealogyRealtime({ people: loadedPeople, relations: loadedRelations }, { nodes: loadedNodes, edges: loadedEdges });
   const [editMode, setEditMode] = useState(false);
+  const [showBirthSurname, setShowBirthSurname] = useState(false);
   const [draft, setDraft] = useState<RelationDraft | null>(null);
   const [editingPerson, setEditingPerson] = useState<Person | null>(null);
   const peopleById = useMemo(() => new Map(people.map((person) => [person.id, person])), [people]);
@@ -69,11 +70,11 @@ export function Home() {
         node.type === "person"
           ? {
               ...node,
-              data: { ...node.data, editMode, onEdit: openPersonEditor },
+              data: { ...node.data, editMode, onEdit: openPersonEditor, showBirthSurname },
             }
           : node,
       ),
-    [editMode, graph.nodes, openPersonEditor],
+    [editMode, graph.nodes, openPersonEditor, showBirthSurname],
   );
 
   const onConnectEnd: OnConnectEnd = useCallback(
@@ -228,22 +229,29 @@ export function Home() {
         <Background color="#d5cbb8" gap={28} size={1} />
         <DiagramPersonSearch nodes={graph.nodes} />
         <Panel position="bottom-left">
-          <ModeControl className="nodrag nopan">
-            <ModeInput
-              type="checkbox"
-              checked={editMode}
-              onChange={(event) => {
-                const enabled = event.target.checked;
-                setEditMode(enabled);
-                if (!enabled) {
-                  setDraft(null);
-                  setEditingPerson(null);
-                }
-              }}
-            />
-            <ModeTrack aria-hidden="true" />
-            <ModeLabel>Tryb edycji</ModeLabel>
-          </ModeControl>
+          <ModeControls className="nodrag nopan">
+            <ModeControl>
+              <ModeInput
+                type="checkbox"
+                checked={editMode}
+                onChange={(event) => {
+                  const enabled = event.target.checked;
+                  setEditMode(enabled);
+                  if (!enabled) {
+                    setDraft(null);
+                    setEditingPerson(null);
+                  }
+                }}
+              />
+              <ModeTrack aria-hidden="true" />
+              <ModeLabel>Tryb edycji</ModeLabel>
+            </ModeControl>
+            <ModeControl>
+              <ModeInput type="checkbox" checked={showBirthSurname} onChange={(event) => setShowBirthSurname(event.target.checked)} />
+              <ModeTrack aria-hidden="true" />
+              <ModeLabel>Nazwisko rodowe</ModeLabel>
+            </ModeControl>
+          </ModeControls>
         </Panel>
         <style>{`
           .react-flow__viewport .react-flow__edges {
@@ -780,6 +788,12 @@ const ModeTrack = styled.span`
   }
 `;
 
+const ModeControls = styled.div`
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.45rem;
+`;
 const ModeControl = styled.label`
   --ink: #1c2a22;
 

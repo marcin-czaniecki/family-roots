@@ -639,6 +639,32 @@ async function placePartnership(
   return leftNodeId;
 }
 
+function centerTreeUnderRoot(nodes: Node[], edges: Edge[], rootRelationId: string): Node[] {
+  const rootNode = nodes.find((node) => node.id === rootRelationId);
+  if (!rootNode) return nodes;
+
+  const rootRowNodeIds = new Set([
+    rootRelationId,
+    ...edges.filter((edge) => edge.type === "partner" && edge.target === rootRelationId).map((edge) => edge.source),
+  ]);
+  const descendants = nodes.filter((node) => !rootRowNodeIds.has(node.id));
+  if (descendants.length === 0) return nodes;
+
+  const minX = Math.min(...descendants.map((node) => node.position.x));
+  const maxX = Math.max(...descendants.map((node) => node.position.x + (node.type === "person" ? PERSON_W : RELATION_SIZE)));
+  const rootCenterX = rootNode.position.x + RELATION_SIZE / 2;
+  const offsetX = rootCenterX - (minX + maxX) / 2;
+  if (Math.abs(offsetX) < 0.5) return nodes;
+
+  return nodes.map((node) =>
+    rootRowNodeIds.has(node.id)
+      ? node
+      : {
+          ...node,
+          position: { ...node.position, x: node.position.x + offsetX },
+        },
+  );
+}
 export async function buildGenealogyGraph(relations: Relation[], peopleById?: ReadonlyMap<string, Person>): Promise<{ nodes: Node[]; edges: Edge[] }> {
   const root = relations.find((r): r is PartnerRelation => isPartner(r) && r.root);
   if (!root) return { nodes: [], edges: [] };
@@ -653,5 +679,5 @@ export async function buildGenealogyGraph(relations: Relation[], peopleById?: Re
   const nodes: Node[] = [];
   const edges: Edge[] = [];
   await placePartnership(relations, root, 0, 0, nodes, edges, new Set(), new Set(), resolvePerson);
-  return { nodes, edges };
+  return { nodes: centerTreeUnderRoot(nodes, edges, root.id), edges };
 }

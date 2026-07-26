@@ -34,6 +34,12 @@ const emptyRelationForm = (): RelationFormValues => ({
 function refId(value: { id?: string } | null | undefined) {
   return value?.id ?? null;
 }
+function polishCount(count: number, one: string, few: string, many: string) {
+  if (count === 1) return one;
+  const lastTwoDigits = count % 100;
+  const lastDigit = count % 10;
+  return lastTwoDigits >= 12 && lastTwoDigits <= 14 ? many : lastDigit >= 2 && lastDigit <= 4 ? few : many;
+}
 
 export function Dashboard() {
   const loaderData = useLoaderData<{ relations: Relation[]; people: Person[] }>();
@@ -306,6 +312,20 @@ function PersonList({
   const totalPages = Math.max(1, Math.ceil(filtered.length / PERSON_PAGE_SIZE));
   const currentPage = Math.min(page, totalPages - 1);
   const visiblePeople = filtered.slice(currentPage * PERSON_PAGE_SIZE, (currentPage + 1) * PERSON_PAGE_SIZE);
+  const duplicateNameCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const person of people) {
+      const key = personName(person).normalize("NFKC").replace(/\s+/g, " ").trim().toLocaleLowerCase("pl");
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return counts;
+  }, [people]);
+  const duplicateGroupCount = [...duplicateNameCounts.values()].filter((count) => count > 1).length;
+  const duplicatedPeopleCount = [...duplicateNameCounts.values()].reduce((total, count) => total + (count > 1 ? count : 0), 0);
+  const duplicateCountFor = (person: Person) => {
+    const key = personName(person).normalize("NFKC").replace(/\s+/g, " ").trim().toLocaleLowerCase("pl");
+    return duplicateNameCounts.get(key) ?? 1;
+  };
 
   const handleDelete = async (person: Person) => {
     const impact = getPersonDeletionImpact(person, people, relations);
@@ -337,6 +357,12 @@ function PersonList({
       <CardHint>
         {filtered.length}
         {query.trim() ? ` z ${people.length}` : ""} rekordów
+        {duplicateGroupCount > 0 ? (
+          <DuplicateSummary>
+            {" · "}Powtórzenia: {duplicateGroupCount} {polishCount(duplicateGroupCount, "grupa", "grupy", "grup")}, {duplicatedPeopleCount}{" "}
+            {polishCount(duplicatedPeopleCount, "osoba", "osoby", "osób")}
+          </DuplicateSummary>
+        ) : null}
       </CardHint>
       <ListSearch
         type="search"
@@ -356,12 +382,21 @@ function PersonList({
         <List>
           {visiblePeople.map((person) => {
             const hint = personDatesOrId(person);
+            const duplicateCount = duplicateCountFor(person);
             return (
               <ListItem key={person.id} $selected={person.id === selectedPersonId}>
                 <ListItemRow>
                   <PersonSelectButton type="button" onClick={() => onSelect(person.id)} aria-pressed={person.id === selectedPersonId}>
                     <ItemTitle>
                       {personName(person)}
+                      {duplicateCount > 1 ? (
+                        <DuplicateBadge
+                          title={`${duplicateCount} ${polishCount(duplicateCount, "rekord", "rekordy", "rekordów")} o tym samym imieniu i nazwisku`}
+                          aria-label={`${duplicateCount} ${polishCount(duplicateCount, "powtórzenie", "powtórzenia", "powtórzeń")} imienia i nazwiska`}
+                        >
+                          ×{duplicateCount}
+                        </DuplicateBadge>
+                      ) : null}
                       {" — "}
                       <PersonHint>{hint.text}</PersonHint>
                     </ItemTitle>
@@ -1202,6 +1237,26 @@ const ItemMeta = styled.div`
 const PersonHint = styled.span`
   text-decoration: underline;
   text-underline-offset: 0.12em;
+  font-variant-numeric: tabular-nums;
+`;
+const DuplicateSummary = styled.span`
+  color: #8b3a2a;
+  font-weight: 700;
+`;
+
+const DuplicateBadge = styled.span`
+  display: inline-flex;
+  min-width: 1.65rem;
+  height: 1.35rem;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #c88978;
+  background: #fff1ee;
+  color: #8b3a2a;
+  padding: 0 0.3rem;
+  box-sizing: border-box;
+  font-size: 0.72rem;
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
 `;
 
