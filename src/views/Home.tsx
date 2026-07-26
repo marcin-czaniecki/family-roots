@@ -962,7 +962,7 @@ function RelationEditor({
 const Canvas = styled.div`
   position: relative;
   width: 100vw;
-  height: 100vh;
+  height: calc(100vh - 4rem);
   background: #f3efe8;
 `;
 
@@ -973,7 +973,7 @@ const DiagramSearchPanel = styled.section`
   --accent: #3d5a4c;
 
   width: min(22rem, calc(100vw - 2rem));
-  margin-top: 1.75rem;
+  margin-top: 0;
   border: 1px solid var(--line);
   background: #f7f4ef;
   color: var(--ink);
