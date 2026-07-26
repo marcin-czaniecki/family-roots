@@ -4,8 +4,8 @@ import { PersonNode } from "@/components/PersonNode";
 import { RelationNode } from "@/components/RelationNode";
 import { getPerson } from "@/entities/person/getPerson";
 import type { Person } from "@/entities/person/types";
-import { childrenOf, isPartner, partnersOf, sideOfKid } from "@/entities/relation/helpers";
-import type { PartnerRelation, Relation } from "@/entities/relation/types";
+import { childrenOf, isParent, isPartner, partnersOf, sideOfKid } from "@/entities/relation/helpers";
+import type { ParentRelation, PartnerRelation, Relation } from "@/entities/relation/types";
 import { TREE_GROWS_UP } from "./genealogyDirection";
 
 export const nodeTypes = {
@@ -272,8 +272,24 @@ function personLayoutMetrics(relations: Relation[], personId: string, fromPartne
   };
 }
 
-function subtreeWidth(relations: Relation[], personId: string, fromPartnershipId?: string): number {
-  return personLayoutMetrics(relations, personId, fromPartnershipId).width;
+function directChildrenOfPerson(relations: Relation[], personId: string): ParentRelation[] {
+  return relations.filter(
+    (relation): relation is ParentRelation => isParent(relation) && !relation.parentship?.id && relation.first.id === personId && !relation.second?.id,
+  );
+}
+
+function subtreeWidth(relations: Relation[], personId: string, fromPartnershipId?: string, ancestors: ReadonlySet<string> = new Set()): number {
+  const partnerships = partnersOf(relations, personId, fromPartnershipId);
+  if (partnerships.length > 0) return personLayoutMetrics(relations, personId, fromPartnershipId).width;
+  if (ancestors.has(personId)) return PERSON_W;
+
+  const children = directChildrenOfPerson(relations, personId);
+  if (children.length === 0) return PERSON_W;
+
+  const nextAncestors = new Set(ancestors).add(personId);
+  const childrenWidth =
+    children.reduce((total, relation) => total + subtreeWidth(relations, relation.person.id, undefined, nextAncestors), 0) + GAP * (children.length - 1);
+  return Math.max(PERSON_W, childrenWidth);
 }
 
 /** Reuses person.id on first placement; later marriages of a spouse may get a duplicate card. */
@@ -321,7 +337,6 @@ type KidPlacement = {
   person: Person;
   side: "left" | "center" | "right";
   width: number;
-  personOffsetX: number;
 };
 
 async function placeKidsForPartnership(
@@ -344,16 +359,12 @@ async function placeKidsForPartnership(
   if (kids.length === 0) return;
 
   const kidsWithPeople: KidPlacement[] = await Promise.all(
-    kids.map(async (child) => {
-      const metrics = personLayoutMetrics(relations, child.person.id, partnerRel.id);
-      return {
-        child,
-        person: await resolvePerson(child.person.id),
-        side: sideOfKid(child, leftParentId, rightParentId),
-        width: metrics.width,
-        personOffsetX: metrics.personOffsetX,
-      };
-    }),
+    kids.map(async (child) => ({
+      child,
+      person: await resolvePerson(child.person.id),
+      side: sideOfKid(child, leftParentId, rightParentId),
+      width: subtreeWidth(relations, child.person.id, partnerRel.id),
+    })),
   );
 
   const byBirth = (a: KidPlacement, b: KidPlacement) => birthRank(a.person) - birthRank(b.person);
@@ -376,7 +387,7 @@ async function placeKidsForPartnership(
 
   const placeGroup = async (group: KidPlacement[], startX: number) => {
     let cursor = startX;
-    for (const { child, person, side, width: w, personOffsetX } of group) {
+    for (const { child, person, side, width: w } of group) {
       const ownPartners = partnersOf(relations, child.person.id, partnerRel.id);
       let childNodeId: string;
 
@@ -395,7 +406,7 @@ async function placeKidsForPartnership(
           partnerRel.id,
         );
       } else {
-        childNodeId = upsertPersonNode(nodes, placedPeople, person, { x: cursor + personOffsetX, y: childY });
+        childNodeId = await placeSingleParentFamily(relations, person, cursor + w / 2, childY, nodes, edges, placedPeople, placedRelations, resolvePerson);
       }
 
       if (side === "center") {
@@ -639,6 +650,54 @@ async function placePartnership(
   return leftNodeId;
 }
 
+async function placeSingleParentFamily(
+  relations: Relation[],
+  person: Person,
+  centerX: number,
+  y: number,
+  nodes: Node[],
+  edges: Edge[],
+  placedPeople: Set<string>,
+  placedRelations: Set<string>,
+  resolvePerson: PersonResolver,
+  root = false,
+): Promise<string> {
+  const parentNodeId = upsertPersonNode(nodes, placedPeople, person, { x: centerX - PERSON_W / 2, y });
+  if (root) {
+    const rootNode = nodes.find((node) => node.id === parentNodeId);
+    if (rootNode) rootNode.data = { ...rootNode.data, root: true };
+  }
+
+  const childRelations = directChildrenOfPerson(relations, person.id).filter((relation) => !placedRelations.has(relation.id));
+  if (childRelations.length === 0) return parentNodeId;
+
+  const children = await Promise.all(
+    childRelations.map(async (relation) => ({
+      relation,
+      person: await resolvePerson(relation.person.id),
+      width: subtreeWidth(relations, relation.person.id),
+    })),
+  );
+  children.sort((first, second) => birthRank(first.person) - birthRank(second.person));
+
+  const childrenWidth = children.reduce((total, child) => total + child.width, 0) + GAP * (children.length - 1);
+  let cursor = centerX - childrenWidth / 2;
+  const childY = y + GEN_STEP;
+
+  for (const child of children) {
+    placedRelations.add(child.relation.id);
+    const partnerships = partnersOf(relations, child.person.id);
+    const childNodeId =
+      partnerships.length > 0
+        ? await placePersonWithPartners(relations, child.person, partnerships, cursor, childY, nodes, edges, placedPeople, placedRelations, resolvePerson)
+        : await placeSingleParentFamily(relations, child.person, cursor + child.width / 2, childY, nodes, edges, placedPeople, placedRelations, resolvePerson);
+
+    addDescentEdge(parentNodeId, childNodeId, "direct", edges);
+    cursor += child.width + GAP;
+  }
+
+  return parentNodeId;
+}
 function centerTreeUnderRoot(nodes: Node[], edges: Edge[], rootRelationId: string): Node[] {
   const rootNode = nodes.find((node) => node.id === rootRelationId);
   if (!rootNode) return nodes;
@@ -666,8 +725,14 @@ function centerTreeUnderRoot(nodes: Node[], edges: Edge[], rootRelationId: strin
   );
 }
 export async function buildGenealogyGraph(relations: Relation[], peopleById?: ReadonlyMap<string, Person>): Promise<{ nodes: Node[]; edges: Edge[] }> {
-  const root = relations.find((r): r is PartnerRelation => isPartner(r) && r.root);
-  if (!root) return { nodes: [], edges: [] };
+  const partnerRoot = relations.find((relation): relation is PartnerRelation => isPartner(relation) && relation.root);
+  const directParentRelations = relations.filter(
+    (relation): relation is ParentRelation => isParent(relation) && !relation.second?.id && !relation.parentship?.id,
+  );
+  const explicitSingleParentRoot = directParentRelations.find((relation) => relation.root);
+  const childIds = new Set(relations.filter(isParent).map((relation) => relation.person.id));
+  const singleParentRoot = explicitSingleParentRoot ?? directParentRelations.find((relation) => !childIds.has(relation.first.id));
+  if (!partnerRoot && !singleParentRoot) return { nodes: [], edges: [] };
 
   const resolvePerson: PersonResolver = peopleById
     ? async (id) => {
@@ -678,6 +743,14 @@ export async function buildGenealogyGraph(relations: Relation[], peopleById?: Re
     : getPerson;
   const nodes: Node[] = [];
   const edges: Edge[] = [];
-  await placePartnership(relations, root, 0, 0, nodes, edges, new Set(), new Set(), resolvePerson);
-  return { nodes: centerTreeUnderRoot(nodes, edges, root.id), edges };
+
+  if (partnerRoot) {
+    await placePartnership(relations, partnerRoot, 0, 0, nodes, edges, new Set(), new Set(), resolvePerson);
+    return { nodes: centerTreeUnderRoot(nodes, edges, partnerRoot.id), edges };
+  }
+
+  if (!singleParentRoot) return { nodes, edges };
+  const rootPerson = await resolvePerson(singleParentRoot.first.id);
+  await placeSingleParentFamily(relations, rootPerson, 0, 0, nodes, edges, new Set(), new Set(), resolvePerson, true);
+  return { nodes, edges };
 }
