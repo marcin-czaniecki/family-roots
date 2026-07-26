@@ -26,8 +26,9 @@ type GenealogyLoaderData = {
 };
 
 const SEARCH_PAGE_SIZE = 6;
+const DEFAULT_RELATION_COLOR = "#3d5a4c";
 
-type RelationTarget = { mode: "existing"; personId: string } | { mode: "new"; person: PersonFormValues };
+type RelationTarget = ({ mode: "existing"; personId: string } | { mode: "new"; person: PersonFormValues }) & { color: string | null };
 
 type RelationDraft =
   | {
@@ -163,7 +164,7 @@ export function Home() {
       const sourceRef = doc(db, "people", activeDraft.sourcePersonId);
       const first = activeDraft.sourceRole === "first" ? sourceRef : personRef;
       const second = activeDraft.sourceRole === "first" ? personRef : sourceRef;
-      batch.set(relationRef, { type: "partner", first, second, root: false });
+      batch.set(relationRef, { type: "partner", color: target.color, first, second, root: false });
     } else {
       if (personRef.id === activeDraft.firstId || personRef.id === activeDraft.secondId) {
         throw new Error("Osoba nie może być własnym dzieckiem.");
@@ -180,7 +181,7 @@ export function Home() {
       const second = activeDraft.secondId ? doc(db, "people", activeDraft.secondId) : null;
       const parentship = activeDraft.parentshipId ? doc(db, "relations", activeDraft.parentshipId) : null;
 
-      batch.set(relationRef, { type: "parent", first, second, person: personRef, parentship, root: false });
+      batch.set(relationRef, { type: "parent", color: target.color, first, second, person: personRef, parentship, root: false });
     }
 
     await batch.commit();
@@ -193,7 +194,7 @@ export function Home() {
     });
     setEditingPerson(null);
   };
-  const saveParentRelation = async (relation: ParentRelation, secondParentId: string) => {
+  const saveParentRelation = async (relation: ParentRelation, secondParentId: string, color: string | null) => {
     const parentship = secondParentId
       ? relations
           .filter(
@@ -206,9 +207,13 @@ export function Home() {
       : null;
 
     await updateDoc(doc(db, "relations", relation.id), {
+      color,
       second: secondParentId ? doc(db, "people", secondParentId) : null,
       parentship: parentship ? doc(db, "relations", parentship.id) : null,
     });
+  };
+  const savePartnerRelation = async (relation: PartnerRelation, color: string | null) => {
+    await updateDoc(doc(db, "relations", relation.id), { color });
   };
   const deleteRelation = async (relation: Relation) => {
     await deleteRelationWithDependents(relation, relations);
@@ -326,6 +331,7 @@ export function Home() {
           onSave={(values) => savePerson(editingPerson.id, values)}
           onDelete={() => deletePerson(editingPerson)}
           onSaveParentRelation={saveParentRelation}
+          onSavePartnerRelation={savePartnerRelation}
           onDeleteRelation={deleteRelation}
         />
       ) : null}
@@ -451,6 +457,7 @@ function EditPersonEditor({
   onSave,
   onDelete,
   onSaveParentRelation,
+  onSavePartnerRelation,
   onDeleteRelation,
 }: {
   person: Person;
@@ -459,14 +466,15 @@ function EditPersonEditor({
   onCancel: () => void;
   onSave: (values: PersonFormValues) => Promise<void>;
   onDelete: () => Promise<void>;
-  onSaveParentRelation: (relation: ParentRelation, secondParentId: string) => Promise<void>;
+  onSaveParentRelation: (relation: ParentRelation, secondParentId: string, color: string | null) => Promise<void>;
+  onSavePartnerRelation: (relation: PartnerRelation, color: string | null) => Promise<void>;
   onDeleteRelation: (relation: Relation) => Promise<void>;
 }) {
   const [activeTab, setActiveTab] = useState<"details" | "relations">("details");
   const [form, setForm] = useState(() => personToForm(person));
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
-  const [editingParentRelationId, setEditingParentRelationId] = useState<string | null>(null);
+  const [editingRelationId, setEditingRelationId] = useState<string | null>(null);
   const [deletingRelationId, setDeletingRelationId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const peopleById = useMemo(() => new Map(people.map((candidate) => [candidate.id, candidate])), [people]);
@@ -477,9 +485,7 @@ function EditPersonEditor({
       ),
     [person.id, relations],
   );
-  const editingParentRelation = personRelations.find(
-    (relation): relation is ParentRelation => relation.type === "parent" && relation.id === editingParentRelationId,
-  );
+  const editingRelation = personRelations.find((relation) => relation.id === editingRelationId);
   const busy = saving || deleting || deletingRelationId !== null;
 
   const personLabelById = (personId: string | null | undefined) => {
@@ -592,7 +598,7 @@ function EditPersonEditor({
           disabled={busy}
           onClick={() => {
             setActiveTab("details");
-            setEditingParentRelationId(null);
+            setEditingRelationId(null);
             setError(null);
           }}
         >
@@ -607,7 +613,7 @@ function EditPersonEditor({
           disabled={busy}
           onClick={() => {
             setActiveTab("relations");
-            setEditingParentRelationId(null);
+            setEditingRelationId(null);
             setError(null);
           }}
         >
@@ -633,15 +639,25 @@ function EditPersonEditor({
         </div>
       ) : (
         <PersonRelationsPanel id="person-relations-panel" role="tabpanel">
-          {editingParentRelation ? (
+          {editingRelation?.type === "parent" ? (
             <ParentRelationEditor
-              relation={editingParentRelation}
+              relation={editingRelation}
               people={people}
               relations={relations}
-              onCancel={() => setEditingParentRelationId(null)}
-              onSave={async (secondParentId) => {
-                await onSaveParentRelation(editingParentRelation, secondParentId);
-                setEditingParentRelationId(null);
+              onCancel={() => setEditingRelationId(null)}
+              onSave={async (secondParentId, color) => {
+                await onSaveParentRelation(editingRelation, secondParentId, color);
+                setEditingRelationId(null);
+              }}
+            />
+          ) : editingRelation?.type === "partner" ? (
+            <PartnerRelationEditor
+              relation={editingRelation}
+              people={people}
+              onCancel={() => setEditingRelationId(null)}
+              onSave={async (color) => {
+                await onSavePartnerRelation(editingRelation, color);
+                setEditingRelationId(null);
               }}
             />
           ) : personRelations.length === 0 ? (
@@ -655,6 +671,12 @@ function EditPersonEditor({
                     <PersonRelationContent>
                       <PersonRelationHeading>
                         <RelationRole $type={relation.type}>{description.role}</RelationRole>
+                        {relation.color ? (
+                          <RelationColorBadge>
+                            <RelationColorBadgeSwatch $color={relation.color} />
+                            {relation.color}
+                          </RelationColorBadge>
+                        ) : null}
                         {relation.root ? <RelationRootBadge>root</RelationRootBadge> : null}
                       </PersonRelationHeading>
                       <PersonRelationDescription>{description.description}</PersonRelationDescription>
@@ -675,11 +697,9 @@ function EditPersonEditor({
                       <PersonRelationId>{relation.id}</PersonRelationId>
                     </PersonRelationContent>
                     <RelationItemActions>
-                      {relation.type === "parent" ? (
-                        <RelationEditButton type="button" disabled={busy} onClick={() => setEditingParentRelationId(relation.id)}>
-                          Edytuj
-                        </RelationEditButton>
-                      ) : null}
+                      <RelationEditButton type="button" disabled={busy} onClick={() => setEditingRelationId(relation.id)}>
+                        Edytuj
+                      </RelationEditButton>
                       <RelationDeleteButton
                         type="button"
                         disabled={busy}
@@ -711,9 +731,10 @@ function ParentRelationEditor({
   people: Person[];
   relations: Relation[];
   onCancel: () => void;
-  onSave: (secondParentId: string) => Promise<void>;
+  onSave: (secondParentId: string, color: string | null) => Promise<void>;
 }) {
   const [secondParentId, setSecondParentId] = useState(relation.second?.id ?? "");
+  const [color, setColor] = useState(relation.color ?? "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const peopleById = useMemo(() => new Map(people.map((person) => [person.id, person])), [people]);
@@ -749,7 +770,7 @@ function ParentRelationEditor({
     setSaving(true);
     setError(null);
     try {
-      await onSave(secondParentId);
+      await onSave(secondParentId, color || null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Nie udało się zaktualizować relacji.");
       setSaving(false);
@@ -792,6 +813,8 @@ function ParentRelationEditor({
         />
       </EditorField>
 
+      <RelationColorField id={`parent-relation-color-${relation.id}`} value={color} onChange={setColor} disabled={saving} />
+
       <ParentshipMatch $matched={Boolean(matchedParentship)} $empty={!secondParentId}>
         <strong>Parentship</strong>
         <span>
@@ -816,6 +839,109 @@ function ParentRelationEditor({
   );
 }
 
+function PartnerRelationEditor({
+  relation,
+  people,
+  onCancel,
+  onSave,
+}: {
+  relation: PartnerRelation;
+  people: Person[];
+  onCancel: () => void;
+  onSave: (color: string | null) => Promise<void>;
+}) {
+  const [color, setColor] = useState(relation.color ?? "");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const peopleById = useMemo(() => new Map(people.map((person) => [person.id, person])), [people]);
+  const labelById = (personId: string | null | undefined) => {
+    if (!personId) return "Nieznana osoba";
+    const person = peopleById.get(personId);
+    return person ? personName(person) : personId;
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      await onSave(color || null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Nie udało się zaktualizować relacji.");
+      setSaving(false);
+    }
+  };
+
+  return (
+    <ParentRelationEditPanel>
+      <ParentRelationEditHeader>
+        <div>
+          <ParentRelationEditTitle>Edytuj relację partnerską</ParentRelationEditTitle>
+          <PersonRelationId>{relation.id}</PersonRelationId>
+        </div>
+        <CloseButton type="button" onClick={onCancel} disabled={saving} aria-label="Zamknij edycję relacji" title="Zamknij">
+          ×
+        </CloseButton>
+      </ParentRelationEditHeader>
+
+      <ParentRelationFixedData>
+        <ParentRelationFixedItem>
+          <span>Pierwsza osoba</span>
+          <strong>{labelById(relation.first.id)}</strong>
+        </ParentRelationFixedItem>
+        <ParentRelationFixedItem>
+          <span>Druga osoba</span>
+          <strong>{labelById(relation.second?.id)}</strong>
+        </ParentRelationFixedItem>
+      </ParentRelationFixedData>
+
+      <RelationColorField id={`partner-relation-color-${relation.id}`} value={color} onChange={setColor} disabled={saving} />
+
+      {error ? <EditorError>{error}</EditorError> : null}
+      <EditorActions>
+        <SaveButton type="button" disabled={saving} onClick={() => void handleSave()}>
+          {saving ? "Zapisywanie…" : "Zapisz relację"}
+        </SaveButton>
+        <CancelButton type="button" disabled={saving} onClick={onCancel}>
+          Anuluj
+        </CancelButton>
+      </EditorActions>
+    </ParentRelationEditPanel>
+  );
+}
+
+function RelationColorField({ id, value, onChange, disabled = false }: { id: string; value: string; onChange: (color: string) => void; disabled?: boolean }) {
+  const enabled = Boolean(value);
+
+  return (
+    <EditorField>
+      <EditorLabel>Kolor gałęzi</EditorLabel>
+      <RelationColorControl>
+        <RelationColorToggle htmlFor={`${id}-enabled`}>
+          <input
+            id={`${id}-enabled`}
+            type="checkbox"
+            checked={enabled}
+            disabled={disabled}
+            onChange={(event) => onChange(event.target.checked ? DEFAULT_RELATION_COLOR : "")}
+          />
+          Własny kolor relacji i jej potomków
+        </RelationColorToggle>
+        {enabled ? (
+          <RelationColorInput
+            id={id}
+            type="color"
+            value={value}
+            disabled={disabled}
+            onChange={(event) => onChange(event.target.value)}
+            aria-label="Kolor relacji"
+          />
+        ) : null}
+      </RelationColorControl>
+      <RelationColorHint>Kolor działa w dół drzewa. Bliższa relacja z własnym kolorem nadpisze ten motyw.</RelationColorHint>
+    </EditorField>
+  );
+}
+
 function RelationEditor({
   draft,
   people,
@@ -833,6 +959,7 @@ function RelationEditor({
   const [mode, setMode] = useState<"existing" | "new">(validPreselection ? "existing" : "new");
   const [personId, setPersonId] = useState(validPreselection);
   const [person, setPerson] = useState<PersonFormValues>(emptyPersonForm);
+  const [color, setColor] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -864,7 +991,7 @@ function RelationEditor({
 
     setSaving(true);
     try {
-      await onSave(mode === "existing" ? { mode, personId } : { mode, person });
+      await onSave(mode === "existing" ? { mode, personId, color: color || null } : { mode, person, color: color || null });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Nie udało się zapisać relacji.");
       setSaving(false);
@@ -887,6 +1014,8 @@ function RelationEditor({
         <span>Relacja</span>
         <strong>{draft.kind === "partner" ? "partner" : "parent"}</strong>
       </RelationSummary>
+
+      <RelationColorField id="new-relation-color" value={color} onChange={setColor} disabled={saving} />
 
       <Segmented aria-label="Źródło osoby">
         <SegmentButton type="button" $active={mode === "existing"} onClick={() => setMode("existing")}>
@@ -1261,6 +1390,22 @@ const RelationRole = styled.span<{ $type: Relation["type"] }>`
   font-weight: 700;
 `;
 
+const RelationColorBadge = styled.span`
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+`;
+
+const RelationColorBadgeSwatch = styled.span<{ $color: string }>`
+  width: 0.72rem;
+  height: 0.72rem;
+  border: 1px solid var(--line);
+  background: ${({ $color }) => $color};
+`;
+
 const RelationRootBadge = styled.span`
   color: #8b3a2a;
   font-size: 0.7rem;
@@ -1534,6 +1679,54 @@ const EditorField = styled.div<{ $span?: boolean }>`
 const EditorLabel = styled.label`
   color: var(--muted);
   font-size: 0.75rem;
+`;
+
+const RelationColorControl = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  min-height: 2.5rem;
+  border: 1px solid var(--line);
+  background: #fff;
+  padding: 0.45rem 0.6rem;
+`;
+
+const RelationColorToggle = styled.label`
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  color: var(--ink);
+  font-size: 0.78rem;
+  line-height: 1.3;
+
+  input {
+    width: 1rem;
+    height: 1rem;
+    flex: 0 0 auto;
+    accent-color: var(--accent);
+  }
+`;
+
+const RelationColorInput = styled.input`
+  width: 3rem;
+  height: 2rem;
+  flex: 0 0 auto;
+  border: 1px solid var(--line);
+  background: #fff;
+  padding: 0.12rem;
+  cursor: pointer;
+
+  &:disabled {
+    cursor: default;
+    opacity: 0.55;
+  }
+`;
+
+const RelationColorHint = styled.span`
+  color: var(--muted);
+  font-size: 0.68rem;
+  line-height: 1.35;
 `;
 
 const EditorError = styled.p`

@@ -1,6 +1,7 @@
 import type { DocumentReference } from "firebase/firestore";
 
 export type PartnerRelation = {
+  color?: string | null;
   id: string;
   first: DocumentReference;
   second?: DocumentReference | null;
@@ -9,6 +10,7 @@ export type PartnerRelation = {
 };
 
 export type ParentRelation = {
+  color?: string | null;
   id: string;
   first: DocumentReference;
   second?: DocumentReference | null;
@@ -19,6 +21,12 @@ export type ParentRelation = {
 };
 
 export type Relation = PartnerRelation | ParentRelation;
+
+function asRelationColor(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const color = value.trim();
+  return /^#[0-9a-f]{6}$/i.test(color) ? color.toLowerCase() : null;
+}
 
 function asDocumentReference(value: unknown): DocumentReference | null {
   if (!value || typeof value !== "object" || !("id" in value) || typeof value.id !== "string") return null;
@@ -31,15 +39,17 @@ export function normalizeRelation(id: string, data: Record<string, unknown>): Re
 
   const second = asDocumentReference(data.second);
   const root = data.root === true;
+  const color = asRelationColor(data.color);
 
   if (data.type === "partner") {
-    return { id, first, second, root, type: "partner" };
+    return { color, id, first, second, root, type: "partner" };
   }
 
   if (data.type === "parent") {
     const person = asDocumentReference(data.person);
     if (!person) return null;
     return {
+      color,
       id,
       first,
       second,

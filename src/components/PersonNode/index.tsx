@@ -9,6 +9,7 @@ type PersonNodeData = Person & {
   editMode?: boolean;
   onEdit?: (person: Person) => void;
   showBirthSurname?: boolean;
+  themeColor?: string | null;
 };
 
 const fadeIn = keyframes`
@@ -22,12 +23,12 @@ const fadeIn = keyframes`
   }
 `;
 
-const Card = styled.article<{ $sex: Sex; $growsUp: boolean }>`
-  --ink: #1c2a22;
-  --muted: #5c6b62;
-  --paper: #f7f4ef;
-  --line: #c5b8a4;
-  --accent: ${({ $sex }) => ($sex ? "#3d5a4c" : "#6b4f3a")};
+const Card = styled.article<{ $sex: Sex; $growsUp: boolean; $themeColor: string | null }>`
+  --ink: ${({ $themeColor }) => ($themeColor ? `color-mix(in srgb, ${$themeColor} 22%, #1c2a22)` : "#1c2a22")};
+  --muted: ${({ $themeColor }) => ($themeColor ? `color-mix(in srgb, ${$themeColor} 28%, #5c6b62)` : "#5c6b62")};
+  --paper: ${({ $themeColor }) => ($themeColor ? `color-mix(in srgb, ${$themeColor} 11%, #f7f4ef)` : "#f7f4ef")};
+  --line: ${({ $themeColor }) => ($themeColor ? `color-mix(in srgb, ${$themeColor} 48%, #c5b8a4)` : "#c5b8a4")};
+  --accent: ${({ $sex, $themeColor }) => $themeColor ?? ($sex ? "#3d5a4c" : "#6b4f3a")};
 
   --enter-y: ${({ $growsUp }) => ($growsUp ? "-4px" : "4px")};
 
@@ -140,7 +141,7 @@ const Biography = styled.aside<{ $growsUp: boolean }>`
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: #fff;
+  background: var(--paper);
   color: var(--ink);
   box-shadow: 0 8px 24px rgba(28, 42, 34, 0.18);
   font-size: 1.1rem;
@@ -161,7 +162,7 @@ const Biography = styled.aside<{ $growsUp: boolean }>`
     left: 50%;
     width: 14px;
     height: 14px;
-    background: #fff;
+    background: var(--paper);
     ${({ $growsUp }) =>
       $growsUp
         ? css`
@@ -194,7 +195,7 @@ const EditButton = styled.button`
   height: 2.5rem;
   border: 1px solid var(--line);
   border-radius: 50%;
-  background: #fff;
+  background: var(--paper);
   color: var(--accent);
   font: inherit;
   font-size: 1.5rem;
@@ -247,7 +248,13 @@ export function PersonNode({ data: person }: { data: PersonNodeData }) {
   const childSide = growsUp ? Position.Top : Position.Bottom;
 
   return (
-    <Card $sex={person.sex} $growsUp={growsUp} tabIndex={biography ? 0 : undefined} aria-describedby={biography ? biographyId : undefined}>
+    <Card
+      $sex={person.sex}
+      $growsUp={growsUp}
+      $themeColor={person.themeColor ?? null}
+      tabIndex={biography ? 0 : undefined}
+      aria-describedby={biography ? biographyId : undefined}
+    >
       <Handle type="target" position={parentSide} id="parent" style={handleStyle} />
       <Handle type="source" position={childSide} id="child" style={handleStyle} />
       <Handle type="source" position={Position.Right} id="partner-first" style={handleStyle} />

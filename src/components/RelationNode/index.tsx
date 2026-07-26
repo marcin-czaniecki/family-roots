@@ -1,4 +1,4 @@
-import { Handle, Position } from "@xyflow/react";
+import { type Node as FlowNode, Handle, type NodeProps, Position } from "@xyflow/react";
 import styled, { keyframes } from "styled-components";
 import { TREE_GROWS_UP } from "@/features/genealogyDirection";
 
@@ -13,9 +13,12 @@ const appear = keyframes`
   }
 `;
 
-const Node = styled.div<{ $growsUp: boolean }>`
-  --ring: #8a735a;
-  --fill: #f7f4ef;
+type RelationNodeData = { color?: string | null; root?: boolean };
+type RelationFlowNode = FlowNode<RelationNodeData, "relation">;
+
+const Node = styled.div<{ $color: string | null; $growsUp: boolean }>`
+  --ring: ${({ $color }) => $color ?? "#8a735a"};
+  --fill: ${({ $color }) => ($color ? `color-mix(in srgb, ${$color} 14%, #f7f4ef)` : "#f7f4ef")};
 
   position: relative;
   width: 14px;
@@ -49,7 +52,7 @@ const handleStyle = {
   minHeight: 0,
 } as const;
 
-export function RelationNode() {
+export function RelationNode({ data }: NodeProps<RelationFlowNode>) {
   const growsUp = TREE_GROWS_UP;
   const childSide = growsUp ? Position.Top : Position.Bottom;
   const childStyle = growsUp
@@ -57,7 +60,7 @@ export function RelationNode() {
     : { ...handleStyle, bottom: 0, left: "50%", transform: "translate(-50%, 50%)" };
 
   return (
-    <Node title="Związek" $growsUp={growsUp}>
+    <Node title="Związek" $color={data.color ?? null} $growsUp={growsUp}>
       <Handle type="target" position={Position.Left} id="partner-first" style={{ ...handleStyle, left: 0, top: "50%", transform: "translate(-50%, -50%)" }} />
       <Handle type="target" position={Position.Right} id="partner-second" style={{ ...handleStyle, right: 0, top: "50%", transform: "translate(50%, -50%)" }} />
       <Handle type="source" position={childSide} id="child" style={childStyle} />

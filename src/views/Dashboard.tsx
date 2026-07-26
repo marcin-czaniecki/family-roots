@@ -13,8 +13,10 @@ import { deleteRelationWithDependents, getRelationDeletionImpact } from "@/featu
 import { db } from "@/firebase";
 
 const PERSON_PAGE_SIZE = 20;
+const DEFAULT_RELATION_COLOR = "#3d5a4c";
 
 type RelationFormValues = {
+  color: string;
   type: "partner" | "parent";
   firstId: string;
   secondId: string;
@@ -24,6 +26,7 @@ type RelationFormValues = {
 };
 
 const emptyRelationForm = (): RelationFormValues => ({
+  color: "",
   type: "partner",
   firstId: "",
   secondId: "",
@@ -503,6 +506,7 @@ function RelationForm({
       if (form.type === "partner") {
         const ref = await addDoc(collection(db, "relations"), {
           type: "partner" as const,
+          color: form.color || null,
           first,
           second,
           root: form.root,
@@ -510,6 +514,7 @@ function RelationForm({
         onCreated({
           id: ref.id,
           type: "partner",
+          color: form.color || null,
           first,
           second,
           root: form.root,
@@ -519,6 +524,7 @@ function RelationForm({
         const person = doc(db, "people", form.personId);
         const ref = await addDoc(collection(db, "relations"), {
           type: "parent" as const,
+          color: form.color || null,
           first,
           second,
           root: form.root,
@@ -528,6 +534,7 @@ function RelationForm({
         onCreated({
           id: ref.id,
           type: "parent",
+          color: form.color || null,
           first,
           second,
           root: form.root,
@@ -595,6 +602,20 @@ function RelationForm({
             <input id="root" type="checkbox" checked={form.root} onChange={(e) => update("root", e.target.checked)} />
             <Label htmlFor="root">Root (punkt startowy drzewa)</Label>
           </CheckboxRow>
+        </Field>
+
+        <Field $span={2}>
+          <Label>Kolor gałęzi</Label>
+          <RelationColorControl>
+            <ColorToggleLabel>
+              <input type="checkbox" checked={Boolean(form.color)} onChange={(event) => update("color", event.target.checked ? DEFAULT_RELATION_COLOR : "")} />
+              Nadaj własny kolor tej relacji i jej potomkom
+            </ColorToggleLabel>
+            {form.color ? (
+              <RelationColorInput type="color" value={form.color} onChange={(event) => update("color", event.target.value)} aria-label="Kolor relacji" />
+            ) : null}
+          </RelationColorControl>
+          <CardHint>Najbliższa relacja z kolorem nadpisze motyw tylko dla swojej dalszej gałęzi.</CardHint>
         </Field>
       </FieldGrid>
 
@@ -712,6 +733,7 @@ function RelationList({
                 <ListItemContent>
                   <ItemTitle>
                     <TypeBadge $type={relation.type}>{relation.type}</TypeBadge>
+                    {relation.color ? <RelationColorSwatch $color={relation.color} title={`Kolor gałęzi: ${relation.color}`} /> : null}
                     {relation.root ? <RootBadge>root</RootBadge> : null}
                     {relation.id}
                   </ItemTitle>
@@ -1044,6 +1066,44 @@ const inputStyles = `
 
 const Select = styled.select`
   ${inputStyles}
+`;
+
+const RelationColorControl = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-height: 2.5rem;
+`;
+
+const ColorToggleLabel = styled.label`
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--ink);
+  font-size: 0.88rem;
+
+  input {
+    width: 1rem;
+    height: 1rem;
+    accent-color: var(--accent);
+  }
+`;
+
+const RelationColorInput = styled.input`
+  width: 3rem;
+  height: 2rem;
+  border: 1px solid var(--line);
+  background: #fff;
+  padding: 0.15rem;
+  cursor: pointer;
+`;
+
+const RelationColorSwatch = styled.span<{ $color: string }>`
+  width: 0.85rem;
+  height: 0.85rem;
+  flex: 0 0 auto;
+  border: 1px solid var(--line);
+  background: ${({ $color }) => $color};
 `;
 
 const Actions = styled.div`

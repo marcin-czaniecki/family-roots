@@ -64,12 +64,12 @@ function birthRank(person: Person): number {
   return y * 10000 + m * 100 + d;
 }
 
-function getPersonNode(id: string, person: Person, position: { x: number; y: number }): PersonFlowNode {
+function getPersonNode(id: string, person: Person, position: { x: number; y: number }, themeColor: string | null = null): PersonFlowNode {
   return {
     id,
     type: "person",
     position,
-    data: person as PersonNodeData,
+    data: { ...person, themeColor } as PersonNodeData,
     draggable: true,
   };
 }
@@ -293,18 +293,25 @@ function subtreeWidth(relations: Relation[], personId: string, fromPartnershipId
 }
 
 /** Reuses person.id on first placement; later marriages of a spouse may get a duplicate card. */
-function upsertPersonNode(nodes: Node[], placedPeople: Set<string>, person: Person, position: { x: number; y: number }, partnerRelId?: string): string {
+function upsertPersonNode(
+  nodes: Node[],
+  placedPeople: Set<string>,
+  person: Person,
+  position: { x: number; y: number },
+  partnerRelId?: string,
+  themeColor: string | null = null,
+): string {
   const nodeId = placedPeople.has(person.id) && partnerRelId ? `${person.id}~${partnerRelId}` : person.id;
 
   const existing = nodes.find((node) => node.id === nodeId);
   if (existing) return nodeId;
 
   placedPeople.add(person.id);
-  nodes.push(getPersonNode(nodeId, person, position));
+  nodes.push(getPersonNode(nodeId, person, position, themeColor));
   return nodeId;
 }
 
-function addDescentEdge(sourceId: string, childId: string, lane: DescentEdgeData["lane"], edges: Edge[]) {
+function addDescentEdge(sourceId: string, childId: string, lane: DescentEdgeData["lane"], edges: Edge[], color: string | null) {
   const id = `${sourceId}->${childId}`;
   if (edges.some((edge) => edge.id === id)) return;
   edges.push({
@@ -315,10 +322,11 @@ function addDescentEdge(sourceId: string, childId: string, lane: DescentEdgeData
     targetHandle: "parent",
     type: "descent",
     data: { lane },
+    style: color ? { stroke: color } : undefined,
   });
 }
 
-function addPartnerEdge(personNodeId: string, relationId: string, side: "left" | "right", edges: Edge[]) {
+function addPartnerEdge(personNodeId: string, relationId: string, side: "left" | "right", edges: Edge[], color: string | null) {
   const sourceHandle = side === "left" ? "partner-first" : "partner-second";
   const targetHandle = side === "left" ? "partner-first" : "partner-second";
   const id = `${personNodeId}->${relationId}`;
@@ -330,6 +338,7 @@ function addPartnerEdge(personNodeId: string, relationId: string, side: "left" |
     sourceHandle,
     targetHandle,
     type: "partner",
+    style: color ? { stroke: color } : undefined,
   });
 }
 
@@ -354,6 +363,7 @@ async function placeKidsForPartnership(
   placedPeople: Set<string>,
   placedRelations: Set<string>,
   resolvePerson: PersonResolver,
+  branchColor: string | null,
   centerBias: KidCenterBias = "center",
 ) {
   const kids = childrenOf(relations, partnerRel).filter((child) => !placedRelations.has(child.id));
@@ -392,6 +402,7 @@ async function placeKidsForPartnership(
   const placeGroup = async (group: KidPlacement[], startX: number) => {
     let cursor = startX;
     for (const { child, person, side, width: w } of group) {
+      const childColor = child.color ?? branchColor;
       const ownPartners = partnersOf(relations, child.person.id, partnerRel.id);
       let childNodeId: string;
 
@@ -407,17 +418,29 @@ async function placeKidsForPartnership(
           placedPeople,
           placedRelations,
           resolvePerson,
+          childColor,
           partnerRel.id,
         );
       } else {
-        childNodeId = await placeSingleParentFamily(relations, person, cursor + w / 2, childY, nodes, edges, placedPeople, placedRelations, resolvePerson);
+        childNodeId = await placeSingleParentFamily(
+          relations,
+          person,
+          cursor + w / 2,
+          childY,
+          nodes,
+          edges,
+          placedPeople,
+          placedRelations,
+          resolvePerson,
+          childColor,
+        );
       }
 
       if (side === "center") {
-        addDescentEdge(partnerRel.id, childNodeId, "union", edges);
+        addDescentEdge(partnerRel.id, childNodeId, "union", edges, childColor);
       } else {
         const parentNodeId = side === "left" ? leftNodeId : (rightNodeId ?? leftNodeId);
-        addDescentEdge(parentNodeId, childNodeId, "direct", edges);
+        addDescentEdge(parentNodeId, childNodeId, "direct", edges, childColor);
       }
       cursor += w + GAP;
     }
@@ -445,10 +468,12 @@ async function placeSidePartnership(
   placedPeople: Set<string>,
   placedRelations: Set<string>,
   resolvePerson: PersonResolver,
+  inheritedColor: string | null,
 ) {
   if (placedRelations.has(partnerRel.id)) return;
   placedRelations.add(partnerRel.id);
 
+  const branchColor = partnerRel.color ?? inheritedColor;
   const relationY = y + PERSON_H / 2 - RELATION_SIZE / 2;
   const otherId = otherPartnerId(partnerRel, sharedPerson.id);
   const other = otherId ? await resolvePerson(otherId) : null;
@@ -468,17 +493,17 @@ async function placeSidePartnership(
       id: partnerRel.id,
       type: "relation",
       position: { x: relationX, y: relationY },
-      data: {},
+      data: { color: branchColor },
       draggable: true,
     });
 
-    addPartnerEdge(sharedNodeId, partnerRel.id, "left", edges);
+    addPartnerEdge(sharedNodeId, partnerRel.id, "left", edges, branchColor);
     leftParentId = sharedPerson.id;
     leftNodeId = sharedNodeId;
 
     if (other) {
-      rightNodeId = upsertPersonNode(nodes, placedPeople, other, { x: partnerX, y }, partnerRel.id);
-      addPartnerEdge(rightNodeId, partnerRel.id, "right", edges);
+      rightNodeId = upsertPersonNode(nodes, placedPeople, other, { x: partnerX, y }, partnerRel.id, branchColor);
+      addPartnerEdge(rightNodeId, partnerRel.id, "right", edges, branchColor);
       rightParentId = other.id;
     } else {
       rightNodeId = null;
@@ -493,17 +518,17 @@ async function placeSidePartnership(
       id: partnerRel.id,
       type: "relation",
       position: { x: relationX, y: relationY },
-      data: {},
+      data: { color: branchColor },
       draggable: true,
     });
 
-    addPartnerEdge(sharedNodeId, partnerRel.id, "right", edges);
+    addPartnerEdge(sharedNodeId, partnerRel.id, "right", edges, branchColor);
     rightParentId = sharedPerson.id;
     rightNodeId = sharedNodeId;
 
     if (other) {
-      leftNodeId = upsertPersonNode(nodes, placedPeople, other, { x: partnerX, y }, partnerRel.id);
-      addPartnerEdge(leftNodeId, partnerRel.id, "left", edges);
+      leftNodeId = upsertPersonNode(nodes, placedPeople, other, { x: partnerX, y }, partnerRel.id, branchColor);
+      addPartnerEdge(leftNodeId, partnerRel.id, "left", edges, branchColor);
       leftParentId = other.id;
     } else {
       leftNodeId = sharedNodeId;
@@ -527,6 +552,7 @@ async function placeSidePartnership(
     placedPeople,
     placedRelations,
     resolvePerson,
+    branchColor,
     side,
   );
 }
@@ -546,19 +572,32 @@ async function placePersonWithPartners(
   placedPeople: Set<string>,
   placedRelations: Set<string>,
   resolvePerson: PersonResolver,
+  inheritedColor: string | null = null,
   fromPartnershipId?: string,
 ): Promise<string> {
   if (partnerships.length === 1) {
     const partnerRel = partnerships[0]!;
     const otherId = otherPartnerId(partnerRel, person.id);
     const metrics = partnershipLayoutMetrics(relations, partnerRel, person.id, otherId);
-    return placePartnership(relations, partnerRel, slotLeft + metrics.centerOffsetX, y, nodes, edges, placedPeople, placedRelations, resolvePerson, person.id);
+    return placePartnership(
+      relations,
+      partnerRel,
+      slotLeft + metrics.centerOffsetX,
+      y,
+      nodes,
+      edges,
+      placedPeople,
+      placedRelations,
+      resolvePerson,
+      person.id,
+      inheritedColor,
+    );
   }
 
   const metrics = personLayoutMetrics(relations, person.id, fromPartnershipId);
   const { sides } = planMultiPartnerLayout(relations, person.id, partnerships);
   const personX = slotLeft + metrics.personOffsetX;
-  const sharedNodeId = upsertPersonNode(nodes, placedPeople, person, { x: personX, y });
+  const sharedNodeId = upsertPersonNode(nodes, placedPeople, person, { x: personX, y }, undefined, inheritedColor);
 
   for (const { partnerRel, side, innerEdgeX } of sides) {
     await placeSidePartnership(
@@ -574,6 +613,7 @@ async function placePersonWithPartners(
       placedPeople,
       placedRelations,
       resolvePerson,
+      inheritedColor,
     );
   }
 
@@ -591,10 +631,12 @@ async function placePartnership(
   placedRelations: Set<string>,
   resolvePerson: PersonResolver,
   bloodRelativeId?: string,
+  inheritedColor: string | null = null,
 ): Promise<string> {
   if (placedRelations.has(partnerRel.id)) return bloodRelativeId ?? partnerRel.first.id;
   placedRelations.add(partnerRel.id);
 
+  const branchColor = partnerRel.color ?? inheritedColor;
   const first = await resolvePerson(partnerRel.first.id);
   const second = partnerRel.second?.id ? await resolvePerson(partnerRel.second.id) : null;
 
@@ -621,17 +663,17 @@ async function placePartnership(
     id: partnerRel.id,
     type: "relation",
     position: { x: relationX, y: relationY },
-    data: { root: partnerRel.root },
+    data: { color: branchColor, root: partnerRel.root },
     draggable: true,
   });
 
-  const leftNodeId = upsertPersonNode(nodes, placedPeople, left, { x: leftX, y }, partnerRel.id);
-  addPartnerEdge(leftNodeId, partnerRel.id, "left", edges);
+  const leftNodeId = upsertPersonNode(nodes, placedPeople, left, { x: leftX, y }, partnerRel.id, branchColor);
+  addPartnerEdge(leftNodeId, partnerRel.id, "left", edges, branchColor);
 
   let rightNodeId: string | null = null;
   if (right) {
-    rightNodeId = upsertPersonNode(nodes, placedPeople, right, { x: rightX, y }, partnerRel.id);
-    addPartnerEdge(rightNodeId, partnerRel.id, "right", edges);
+    rightNodeId = upsertPersonNode(nodes, placedPeople, right, { x: rightX, y }, partnerRel.id, branchColor);
+    addPartnerEdge(rightNodeId, partnerRel.id, "right", edges, branchColor);
   }
 
   await placeKidsForPartnership(
@@ -648,6 +690,7 @@ async function placePartnership(
     placedPeople,
     placedRelations,
     resolvePerson,
+    branchColor,
   );
 
   if (bloodRelativeId && right?.id === bloodRelativeId && rightNodeId) return rightNodeId;
@@ -664,9 +707,10 @@ async function placeSingleParentFamily(
   placedPeople: Set<string>,
   placedRelations: Set<string>,
   resolvePerson: PersonResolver,
+  branchColor: string | null = null,
   root = false,
 ): Promise<string> {
-  const parentNodeId = upsertPersonNode(nodes, placedPeople, person, { x: centerX - PERSON_W / 2, y });
+  const parentNodeId = upsertPersonNode(nodes, placedPeople, person, { x: centerX - PERSON_W / 2, y }, undefined, branchColor);
   if (root) {
     const rootNode = nodes.find((node) => node.id === parentNodeId);
     if (rootNode) rootNode.data = { ...rootNode.data, root: true };
@@ -690,13 +734,37 @@ async function placeSingleParentFamily(
 
   for (const child of children) {
     placedRelations.add(child.relation.id);
+    const childColor = child.relation.color ?? branchColor;
     const partnerships = partnersOf(relations, child.person.id);
     const childNodeId =
       partnerships.length > 0
-        ? await placePersonWithPartners(relations, child.person, partnerships, cursor, childY, nodes, edges, placedPeople, placedRelations, resolvePerson)
-        : await placeSingleParentFamily(relations, child.person, cursor + child.width / 2, childY, nodes, edges, placedPeople, placedRelations, resolvePerson);
+        ? await placePersonWithPartners(
+            relations,
+            child.person,
+            partnerships,
+            cursor,
+            childY,
+            nodes,
+            edges,
+            placedPeople,
+            placedRelations,
+            resolvePerson,
+            childColor,
+          )
+        : await placeSingleParentFamily(
+            relations,
+            child.person,
+            cursor + child.width / 2,
+            childY,
+            nodes,
+            edges,
+            placedPeople,
+            placedRelations,
+            resolvePerson,
+            childColor,
+          );
 
-    addDescentEdge(parentNodeId, childNodeId, "direct", edges);
+    addDescentEdge(parentNodeId, childNodeId, "direct", edges, childColor);
     cursor += child.width + GAP;
   }
 
@@ -755,6 +823,6 @@ export async function buildGenealogyGraph(relations: Relation[], peopleById?: Re
 
   if (!singleParentRoot) return { nodes, edges };
   const rootPerson = await resolvePerson(singleParentRoot.first.id);
-  await placeSingleParentFamily(relations, rootPerson, 0, 0, nodes, edges, new Set(), new Set(), resolvePerson, true);
+  await placeSingleParentFamily(relations, rootPerson, 0, 0, nodes, edges, new Set(), new Set(), resolvePerson, null, true);
   return { nodes, edges };
 }
