@@ -1,16 +1,18 @@
 import { Background, type Edge, type Node, type OnConnectEnd, Panel, ReactFlow, useReactFlow } from "@xyflow/react";
-import { collection, doc, onSnapshot, serverTimestamp, updateDoc, writeBatch } from "firebase/firestore";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { collection, doc, serverTimestamp, updateDoc, writeBatch } from "firebase/firestore";
+import { useCallback, useMemo, useState } from "react";
 import { useLoaderData } from "react-router";
 import styled from "styled-components";
 import { FitToTop } from "@/components/FitToTop";
 import { PersonFormFields } from "@/components/PersonFormFields";
 import { PersonSearchSelect } from "@/components/PersonSearchSelect";
 import { matchesPersonQuery, personDatesOrId, personName } from "@/entities/person/label";
-import { normalizePerson, type Person } from "@/entities/person/types";
+import type { Person } from "@/entities/person/types";
 import type { PartnerRelation, Relation } from "@/entities/relation/types";
-import { buildGenealogyGraph, edgeTypes, nodeTypes } from "@/features/genealogyLayout";
+import { edgeTypes, nodeTypes } from "@/features/genealogyLayout";
+import { deletePersonWithRelations, getPersonDeletionImpact } from "@/features/personDeletion";
 import { emptyPersonForm, type PersonFormValues, personFormPayload, personToForm, validatePersonForm } from "@/features/personForm";
+import { useGenealogyRealtime } from "@/features/useGenealogyRealtime";
 import { db } from "@/firebase";
 
 import "@xyflow/react/dist/style.css";
@@ -52,9 +54,7 @@ function relationPersonLabel(personId: string, peopleById: Map<string, Person>) 
 
 export function Home() {
   const { nodes: loadedNodes, edges: loadedEdges, people: loadedPeople, relations: loadedRelations } = useLoaderData<GenealogyLoaderData>();
-  const [graph, setGraph] = useState(() => ({ nodes: loadedNodes, edges: loadedEdges }));
-  const [people, setPeople] = useState(loadedPeople);
-  const [relations, setRelations] = useState(loadedRelations);
+  const { graph, people, relations } = useGenealogyRealtime({ people: loadedPeople, relations: loadedRelations }, { nodes: loadedNodes, edges: loadedEdges });
   const [editMode, setEditMode] = useState(false);
   const [draft, setDraft] = useState<RelationDraft | null>(null);
   const [editingPerson, setEditingPerson] = useState<Person | null>(null);
@@ -76,76 +76,6 @@ export function Home() {
     [editMode, graph.nodes, openPersonEditor],
   );
 
-  useEffect(() => {
-    let active = true;
-    let peopleReady = false;
-    let relationsReady = false;
-    let scheduledFrame: number | null = null;
-    let buildVersion = 0;
-    let currentPeople = new Map(loadedPeople.map((person) => [person.id, person]));
-    let currentRelations = loadedRelations;
-
-    const scheduleGraphBuild = () => {
-      if (!peopleReady || !relationsReady || scheduledFrame !== null) return;
-      scheduledFrame = requestAnimationFrame(() => {
-        scheduledFrame = null;
-        const referencedPersonIds = new Set<string>();
-        for (const relation of currentRelations) {
-          referencedPersonIds.add(relation.first.id);
-          if (relation.second?.id) referencedPersonIds.add(relation.second.id);
-          if (relation.type === "parent") referencedPersonIds.add(relation.person.id);
-        }
-        if ([...referencedPersonIds].some((personId) => !currentPeople.has(personId))) return;
-
-        const version = ++buildVersion;
-        void buildGenealogyGraph(currentRelations, currentPeople)
-          .then((nextGraph) => {
-            if (active && version === buildVersion) setGraph(nextGraph);
-          })
-          .catch((error) => {
-            console.error("Nie udało się przebudować drzewa ze snapshotu Firestore.", error);
-          });
-      });
-    };
-
-    const unsubscribePeople = onSnapshot(
-      collection(db, "people"),
-      (snapshot) => {
-        const changedPersonIds = new Set(snapshot.docChanges().map((change) => change.doc.id));
-        const referencedPersonIds = new Set<string>();
-        for (const relation of currentRelations) {
-          referencedPersonIds.add(relation.first.id);
-          if (relation.second?.id) referencedPersonIds.add(relation.second.id);
-          if (relation.type === "parent") referencedPersonIds.add(relation.person.id);
-        }
-        const affectsGraph = !peopleReady || [...changedPersonIds].some((personId) => referencedPersonIds.has(personId));
-        const nextPeople = snapshot.docs.map((document) => normalizePerson(document.id, document.data() as Record<string, unknown>));
-        currentPeople = new Map(nextPeople.map((person) => [person.id, person]));
-        peopleReady = true;
-        setPeople(nextPeople);
-        if (affectsGraph) scheduleGraphBuild();
-      },
-      (error) => console.error("Listener people został przerwany.", error),
-    );
-    const unsubscribeRelations = onSnapshot(
-      collection(db, "relations"),
-      (snapshot) => {
-        currentRelations = snapshot.docs.map((document) => ({ id: document.id, ...document.data() })) as Relation[];
-        relationsReady = true;
-        setRelations(currentRelations);
-        scheduleGraphBuild();
-      },
-      (error) => console.error("Listener relations został przerwany.", error),
-    );
-
-    return () => {
-      active = false;
-      buildVersion += 1;
-      if (scheduledFrame !== null) cancelAnimationFrame(scheduledFrame);
-      unsubscribePeople();
-      unsubscribeRelations();
-    };
-  }, [loadedPeople, loadedRelations]);
   const onConnectEnd: OnConnectEnd = useCallback(
     (_event, connectionState) => {
       if (!editMode || !connectionState.fromNode || !connectionState.fromHandle || connectionState.fromHandle.type !== "source") return;
@@ -261,6 +191,20 @@ export function Home() {
     });
     setEditingPerson(null);
   };
+  const deletePerson = async (person: Person) => {
+    const impact = getPersonDeletionImpact(person, people, relations);
+    const details = [
+      `Relacje do usunięcia: ${impact.relationsToDelete}.`,
+      `Relacje do aktualizacji: ${impact.relationsToUpdate}.`,
+      `Pola rodziców do wyczyszczenia: ${impact.parentLinksToClear}.`,
+    ].join("\n");
+    const rootWarning = impact.deletesRootRelation ? "\n\nUwaga: wraz z osobą zostanie usunięta relacja root drzewa." : "";
+
+    if (!window.confirm(`Usunąć osobę „${personName(person)}”?\n\n${details}${rootWarning}\n\nTej operacji nie można cofnąć.`)) return;
+
+    await deletePersonWithRelations(person, people, relations);
+    setEditingPerson(null);
+  };
   return (
     <Canvas>
       <ReactFlow
@@ -345,7 +289,12 @@ export function Home() {
         <RelationEditor key={draft.id} draft={draft} people={people} onCancel={() => setDraft(null)} onSave={(target) => saveRelation(draft, target)} />
       ) : null}
       {editingPerson ? (
-        <EditPersonEditor person={editingPerson} onCancel={() => setEditingPerson(null)} onSave={(values) => savePerson(editingPerson.id, values)} />
+        <EditPersonEditor
+          person={editingPerson}
+          onCancel={() => setEditingPerson(null)}
+          onSave={(values) => savePerson(editingPerson.id, values)}
+          onDelete={() => deletePerson(editingPerson)}
+        />
       ) : null}
     </Canvas>
   );
@@ -461,9 +410,20 @@ function DiagramPersonSearch({ nodes }: { nodes: Node[] }) {
     </Panel>
   );
 }
-function EditPersonEditor({ person, onCancel, onSave }: { person: Person; onCancel: () => void; onSave: (values: PersonFormValues) => Promise<void> }) {
+function EditPersonEditor({
+  person,
+  onCancel,
+  onSave,
+  onDelete,
+}: {
+  person: Person;
+  onCancel: () => void;
+  onSave: (values: PersonFormValues) => Promise<void>;
+  onDelete: () => Promise<void>;
+}) {
   const [form, setForm] = useState(() => personToForm(person));
   const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -485,6 +445,18 @@ function EditPersonEditor({ person, onCancel, onSave }: { person: Person; onCanc
     }
   };
 
+  const handleDelete = async () => {
+    setError(null);
+    setDeleting(true);
+    try {
+      await onDelete();
+      setDeleting(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Nie udało się usunąć osoby.");
+      setDeleting(false);
+    }
+  };
+
   return (
     <EditorDrawer className="nodrag nopan nowheel" onSubmit={handleSubmit}>
       <EditorHeader>
@@ -492,7 +464,7 @@ function EditPersonEditor({ person, onCancel, onSave }: { person: Person; onCanc
           <EditorTitle>Edytuj osobę</EditorTitle>
           <EditorContext>{personName(person)}</EditorContext>
         </div>
-        <CloseButton type="button" onClick={onCancel} aria-label="Zamknij formularz" title="Zamknij">
+        <CloseButton type="button" onClick={onCancel} disabled={saving || deleting} aria-label="Zamknij formularz" title="Zamknij">
           ×
         </CloseButton>
       </EditorHeader>
@@ -500,12 +472,15 @@ function EditPersonEditor({ person, onCancel, onSave }: { person: Person; onCanc
       <PersonFormFields value={form} onChange={setForm} idPrefix="edit-person" autoFocus />
       {error ? <EditorError>{error}</EditorError> : null}
       <EditorActions>
-        <SaveButton type="submit" disabled={saving}>
+        <SaveButton type="submit" disabled={saving || deleting}>
           {saving ? "Zapisywanie…" : "Zapisz zmiany"}
         </SaveButton>
-        <CancelButton type="button" onClick={onCancel} disabled={saving}>
+        <CancelButton type="button" onClick={onCancel} disabled={saving || deleting}>
           Anuluj
         </CancelButton>
+        <DeletePersonButton type="button" onClick={() => void handleDelete()} disabled={saving || deleting}>
+          {deleting ? "Usuwanie…" : "Usuń osobę"}
+        </DeletePersonButton>
       </EditorActions>
     </EditorDrawer>
   );
@@ -986,6 +961,26 @@ const CancelButton = styled.button`
   font: inherit;
   font-size: 0.85rem;
   cursor: pointer;
+
+  &:disabled {
+    opacity: 0.55;
+    cursor: default;
+  }
+`;
+const DeletePersonButton = styled.button`
+  margin-left: auto;
+  border: 1px solid #b84332;
+  background: #fff;
+  color: #9f3023;
+  padding: 0.55rem 0.8rem;
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 700;
+  cursor: pointer;
+
+  &:hover:not(:disabled) {
+    background: #fff1ee;
+  }
 
   &:disabled {
     opacity: 0.55;

@@ -1,7 +1,7 @@
 import { doc, serverTimestamp, writeBatch } from "firebase/firestore";
 import type { Person } from "@/entities/person/types";
 import type { Relation } from "@/entities/relation/types";
-import { db } from "@/services/firebase";
+import { db } from "@/firebase";
 
 type PersonDeletionPlan = {
   clearedParentLinks: Person[];
@@ -112,8 +112,6 @@ export async function deletePersonWithRelations(person: Person, people: Person[]
         ...(candidate.father?.id === person.id ? { father: null } : {}),
         ...(candidate.mother?.id === person.id ? { mother: null } : {}),
       })),
-    relations: relations
-      .filter((relation) => !plan.deletedRelationIds.has(relation.id))
-      .map((relation) => plan.updatedRelations.get(relation.id) ?? relation),
+    relations: relations.filter((relation) => !plan.deletedRelationIds.has(relation.id)).map((relation) => plan.updatedRelations.get(relation.id) ?? relation),
   };
 }

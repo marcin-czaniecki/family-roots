@@ -2,7 +2,7 @@ import { collection, getDocs } from "firebase/firestore";
 import { createBrowserRouter, NavLink, Outlet } from "react-router";
 import styled from "styled-components";
 import { normalizePerson } from "@/entities/person/types";
-import type { Relation } from "@/entities/relation/types";
+import { normalizeRelation } from "@/entities/relation/types";
 import { buildGenealogyGraph } from "@/features/genealogyLayout";
 import { db } from "./firebase";
 import { Dashboard } from "./views/Dashboard";
@@ -166,7 +166,10 @@ export const router = createBrowserRouter([
         Component: Home,
         loader: async () => {
           const [snapshotRelations, snapshotPeople] = await Promise.all([getDocs(collection(db, "relations")), getDocs(collection(db, "people"))]);
-          const relations = snapshotRelations.docs.map((doc) => ({ id: doc.id, ...doc.data() })) as Relation[];
+          const relations = snapshotRelations.docs.flatMap((document) => {
+            const relation = normalizeRelation(document.id, document.data() as Record<string, unknown>);
+            return relation ? [relation] : [];
+          });
           const people = snapshotPeople.docs.map((doc) => normalizePerson(doc.id, doc.data() as Record<string, unknown>));
           return { ...(await buildGenealogyGraph(relations, new Map(people.map((person) => [person.id, person])))), relations, people };
         },
@@ -176,7 +179,10 @@ export const router = createBrowserRouter([
         path: "/dashboard",
         loader: async () => {
           const [snapshotPeople, snapshotRelations] = await Promise.all([getDocs(collection(db, "people")), getDocs(collection(db, "relations"))]);
-          const relations = snapshotRelations.docs.map((doc) => ({ id: doc.id, ...doc.data() })) as Relation[];
+          const relations = snapshotRelations.docs.flatMap((document) => {
+            const relation = normalizeRelation(document.id, document.data() as Record<string, unknown>);
+            return relation ? [relation] : [];
+          });
           const people = snapshotPeople.docs.map((doc) => normalizePerson(doc.id, doc.data() as Record<string, unknown>));
           return { relations, people };
         },

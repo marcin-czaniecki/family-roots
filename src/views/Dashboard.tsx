@@ -7,6 +7,7 @@ import { PersonSearchSelect } from "@/components/PersonSearchSelect";
 import { matchesPersonQuery, personDatesOrId, personLabel, personName } from "@/entities/person/label";
 import type { Person } from "@/entities/person/types";
 import type { Relation } from "@/entities/relation/types";
+import { deletePersonWithRelations, getPersonDeletionImpact } from "@/features/personDeletion";
 import { emptyPersonForm, type PersonFormValues, personFormPayload, personToForm, validatePersonForm } from "@/features/personForm";
 import { db } from "@/firebase";
 
@@ -307,91 +308,22 @@ function PersonList({
   const visiblePeople = filtered.slice(currentPage * PERSON_PAGE_SIZE, (currentPage + 1) * PERSON_PAGE_SIZE);
 
   const handleDelete = async (person: Person) => {
-    const deletedPartnerIds = new Set(
-      relations
-        .filter((relation) => relation.type === "partner" && (refId(relation.first) === person.id || refId(relation.second) === person.id))
-        .map((relation) => relation.id),
-    );
-    const deletedRelationIds = new Set<string>();
-    const updatedRelations = new Map<string, Relation>();
-
-    for (const relation of relations) {
-      if (relation.type === "partner") {
-        if (deletedPartnerIds.has(relation.id)) deletedRelationIds.add(relation.id);
-        continue;
-      }
-
-      if (refId(relation.person) === person.id) {
-        deletedRelationIds.add(relation.id);
-        continue;
-      }
-
-      const firstDeleted = refId(relation.first) === person.id;
-      const secondDeleted = refId(relation.second) === person.id;
-      const parentshipDeleted = deletedPartnerIds.has(refId(relation.parentship) ?? "");
-
-      if (firstDeleted) {
-        const remainingParent = relation.second && refId(relation.second) !== person.id ? relation.second : null;
-        if (!remainingParent) {
-          deletedRelationIds.add(relation.id);
-          continue;
-        }
-        updatedRelations.set(relation.id, {
-          ...relation,
-          first: remainingParent,
-          second: null,
-          parentship: null,
-        });
-      } else if (secondDeleted || parentshipDeleted) {
-        updatedRelations.set(relation.id, {
-          ...relation,
-          ...(secondDeleted ? { second: null } : {}),
-          parentship: null,
-        });
-      }
-    }
-
-    const clearedParentLinks = people.filter(
-      (otherPerson) => otherPerson.id !== person.id && (otherPerson.father?.id === person.id || otherPerson.mother?.id === person.id),
-    );
+    const impact = getPersonDeletionImpact(person, people, relations);
     const details = [
-      `Relacje do usunięcia: ${deletedRelationIds.size}.`,
-      `Relacje do aktualizacji: ${updatedRelations.size}.`,
-      `Pola rodziców do wyczyszczenia: ${clearedParentLinks.length}.`,
+      `Relacje do usunięcia: ${impact.relationsToDelete}.`,
+      `Relacje do aktualizacji: ${impact.relationsToUpdate}.`,
+      `Pola rodziców do wyczyszczenia: ${impact.parentLinksToClear}.`,
     ].join("\n");
+    const rootWarning = impact.deletesRootRelation ? "\n\nUwaga: wraz z osobą zostanie usunięta relacja root drzewa." : "";
 
-    if (!window.confirm(`Usunąć osobę „${personName(person)}”?\n\n${details}\n\nTej operacji nie można cofnąć.`)) return;
+    if (!window.confirm(`Usunąć osobę „${personName(person)}”?\n\n${details}${rootWarning}\n\nTej operacji nie można cofnąć.`)) return;
 
     setDeletingPersonId(person.id);
     setDeleteError(null);
 
     try {
-      const batch = writeBatch(db);
-      for (const relationId of deletedRelationIds) {
-        batch.delete(doc(db, "relations", relationId));
-      }
-      for (const relation of updatedRelations.values()) {
-        if (relation.type !== "parent") continue;
-        batch.update(doc(db, "relations", relation.id), {
-          first: relation.first,
-          second: relation.second ?? null,
-          parentship: relation.parentship ?? null,
-        });
-      }
-      for (const otherPerson of clearedParentLinks) {
-        batch.update(doc(db, "people", otherPerson.id), {
-          ...(otherPerson.father?.id === person.id ? { father: null } : {}),
-          ...(otherPerson.mother?.id === person.id ? { mother: null } : {}),
-          updateAt: serverTimestamp(),
-        });
-      }
-      batch.delete(doc(db, "people", person.id));
-      await batch.commit();
-
-      onDeleted(
-        person.id,
-        relations.filter((relation) => !deletedRelationIds.has(relation.id)).map((relation) => updatedRelations.get(relation.id) ?? relation),
-      );
+      const result = await deletePersonWithRelations(person, people, relations);
+      onDeleted(person.id, result.relations);
     } catch (err) {
       setDeleteError(err instanceof Error ? err.message : "Nie udało się usunąć osoby.");
     } finally {
