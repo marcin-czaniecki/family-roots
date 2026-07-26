@@ -21,6 +21,8 @@ export const edgeTypes = {
 type PersonNodeData = Person & Record<string, unknown>;
 type PersonFlowNode = Node<PersonNodeData, "person">;
 
+type PersonResolver = (id: string) => Promise<Person>;
+
 export const PERSON_W = 360;
 export const PERSON_H = 240;
 const RELATION_SIZE = 14;
@@ -335,6 +337,7 @@ async function placeKidsForPartnership(
   edges: Edge[],
   placedPeople: Set<string>,
   placedRelations: Set<string>,
+  resolvePerson: PersonResolver,
   centerBias: KidCenterBias = "center",
 ) {
   const kids = childrenOf(relations, partnerRel);
@@ -345,7 +348,7 @@ async function placeKidsForPartnership(
       const metrics = personLayoutMetrics(relations, child.person.id, partnerRel.id);
       return {
         child,
-        person: await getPerson(child.person.id),
+        person: await resolvePerson(child.person.id),
         side: sideOfKid(child, leftParentId, rightParentId),
         width: metrics.width,
         personOffsetX: metrics.personOffsetX,
@@ -378,7 +381,19 @@ async function placeKidsForPartnership(
       let childNodeId: string;
 
       if (ownPartners.length > 0) {
-        childNodeId = await placePersonWithPartners(relations, person, ownPartners, cursor, childY, nodes, edges, placedPeople, placedRelations, partnerRel.id);
+        childNodeId = await placePersonWithPartners(
+          relations,
+          person,
+          ownPartners,
+          cursor,
+          childY,
+          nodes,
+          edges,
+          placedPeople,
+          placedRelations,
+          resolvePerson,
+          partnerRel.id,
+        );
       } else {
         childNodeId = upsertPersonNode(nodes, placedPeople, person, { x: cursor + personOffsetX, y: childY });
       }
@@ -414,13 +429,14 @@ async function placeSidePartnership(
   edges: Edge[],
   placedPeople: Set<string>,
   placedRelations: Set<string>,
+  resolvePerson: PersonResolver,
 ) {
   if (placedRelations.has(partnerRel.id)) return;
   placedRelations.add(partnerRel.id);
 
   const relationY = y + PERSON_H / 2 - RELATION_SIZE / 2;
   const otherId = otherPartnerId(partnerRel, sharedPerson.id);
-  const other = otherId ? await getPerson(otherId) : null;
+  const other = otherId ? await resolvePerson(otherId) : null;
 
   let leftParentId: string;
   let rightParentId: string | null;
@@ -495,6 +511,7 @@ async function placeSidePartnership(
     edges,
     placedPeople,
     placedRelations,
+    resolvePerson,
     side,
   );
 }
@@ -513,13 +530,14 @@ async function placePersonWithPartners(
   edges: Edge[],
   placedPeople: Set<string>,
   placedRelations: Set<string>,
+  resolvePerson: PersonResolver,
   fromPartnershipId?: string,
 ): Promise<string> {
   if (partnerships.length === 1) {
     const partnerRel = partnerships[0]!;
     const otherId = otherPartnerId(partnerRel, person.id);
     const metrics = partnershipLayoutMetrics(relations, partnerRel, person.id, otherId);
-    return placePartnership(relations, partnerRel, slotLeft + metrics.centerOffsetX, y, nodes, edges, placedPeople, placedRelations, person.id);
+    return placePartnership(relations, partnerRel, slotLeft + metrics.centerOffsetX, y, nodes, edges, placedPeople, placedRelations, resolvePerson, person.id);
   }
 
   const metrics = personLayoutMetrics(relations, person.id, fromPartnershipId);
@@ -528,7 +546,20 @@ async function placePersonWithPartners(
   const sharedNodeId = upsertPersonNode(nodes, placedPeople, person, { x: personX, y });
 
   for (const { partnerRel, side, innerEdgeX } of sides) {
-    await placeSidePartnership(relations, partnerRel, person, sharedNodeId, side, personX + innerEdgeX, y, nodes, edges, placedPeople, placedRelations);
+    await placeSidePartnership(
+      relations,
+      partnerRel,
+      person,
+      sharedNodeId,
+      side,
+      personX + innerEdgeX,
+      y,
+      nodes,
+      edges,
+      placedPeople,
+      placedRelations,
+      resolvePerson,
+    );
   }
 
   return sharedNodeId;
@@ -543,13 +574,14 @@ async function placePartnership(
   edges: Edge[],
   placedPeople: Set<string>,
   placedRelations: Set<string>,
+  resolvePerson: PersonResolver,
   bloodRelativeId?: string,
 ): Promise<string> {
   if (placedRelations.has(partnerRel.id)) return bloodRelativeId ?? partnerRel.first.id;
   placedRelations.add(partnerRel.id);
 
-  const first = await getPerson(partnerRel.first.id);
-  const second = partnerRel.second?.id ? await getPerson(partnerRel.second.id) : null;
+  const first = await resolvePerson(partnerRel.first.id);
+  const second = partnerRel.second?.id ? await resolvePerson(partnerRel.second.id) : null;
 
   let left = first;
   let right = second;
@@ -600,18 +632,26 @@ async function placePartnership(
     edges,
     placedPeople,
     placedRelations,
+    resolvePerson,
   );
 
   if (bloodRelativeId && right?.id === bloodRelativeId && rightNodeId) return rightNodeId;
   return leftNodeId;
 }
 
-export async function buildGenealogyGraph(relations: Relation[]): Promise<{ nodes: Node[]; edges: Edge[] }> {
+export async function buildGenealogyGraph(relations: Relation[], peopleById?: ReadonlyMap<string, Person>): Promise<{ nodes: Node[]; edges: Edge[] }> {
   const root = relations.find((r): r is PartnerRelation => isPartner(r) && r.root);
   if (!root) return { nodes: [], edges: [] };
 
+  const resolvePerson: PersonResolver = peopleById
+    ? async (id) => {
+        const person = peopleById.get(id);
+        if (!person) throw new Error(`Brak osoby ${id} wymaganej przez relację.`);
+        return person;
+      }
+    : getPerson;
   const nodes: Node[] = [];
   const edges: Edge[] = [];
-  await placePartnership(relations, root, 0, 0, nodes, edges, new Set(), new Set());
+  await placePartnership(relations, root, 0, 0, nodes, edges, new Set(), new Set(), resolvePerson);
   return { nodes, edges };
 }

@@ -31,15 +31,14 @@ export const router = createBrowserRouter([
           const [snapshotRelations, snapshotPeople] = await Promise.all([getDocs(collection(db, "relations")), getDocs(collection(db, "people"))]);
           const relations = snapshotRelations.docs.map((doc) => ({ id: doc.id, ...doc.data() })) as Relation[];
           const people = snapshotPeople.docs.map((doc) => normalizePerson(doc.id, doc.data() as Record<string, unknown>));
-          return { ...(await buildGenealogyGraph(relations)), relations, people };
+          return { ...(await buildGenealogyGraph(relations, new Map(people.map((person) => [person.id, person])))), relations, people };
         },
         HydrateFallback: () => <p>Loading…</p>,
       },
       {
         path: "/dashboard",
         loader: async () => {
-          const snapshotPeople = await getDocs(collection(db, "people"));
-          const snapshotRelations = await getDocs(collection(db, "relations"));
+          const [snapshotPeople, snapshotRelations] = await Promise.all([getDocs(collection(db, "people")), getDocs(collection(db, "relations"))]);
           const relations = snapshotRelations.docs.map((doc) => ({ id: doc.id, ...doc.data() })) as Relation[];
           const people = snapshotPeople.docs.map((doc) => normalizePerson(doc.id, doc.data() as Record<string, unknown>));
           return { relations, people };

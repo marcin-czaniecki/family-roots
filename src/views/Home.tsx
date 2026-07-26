@@ -1,12 +1,12 @@
 import { Background, type Edge, type Node, type OnConnectEnd, Panel, ReactFlow, useReactFlow } from "@xyflow/react";
-import { collection, doc, serverTimestamp, updateDoc, writeBatch } from "firebase/firestore";
+import { collection, doc, onSnapshot, serverTimestamp, updateDoc, writeBatch } from "firebase/firestore";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useLoaderData, useRevalidator } from "react-router";
+import { useLoaderData } from "react-router";
 import styled from "styled-components";
 import { FitToTop } from "@/components/FitToTop";
 import { PersonSearchSelect } from "@/components/PersonSearchSelect";
 import { matchesPersonQuery, personDatesOrId, personName } from "@/entities/person/label";
-import type { Person } from "@/entities/person/types";
+import { normalizePerson, type Person } from "@/entities/person/types";
 import type { PartnerRelation, Relation } from "@/entities/relation/types";
 import { buildGenealogyGraph, edgeTypes, nodeTypes } from "@/features/genealogyLayout";
 import { db } from "@/firebase";
@@ -151,9 +151,10 @@ function relationPersonLabel(personId: string, peopleById: Map<string, Person>) 
 }
 
 export function Home() {
-  const { nodes: loadedNodes, edges: loadedEdges, people, relations } = useLoaderData<GenealogyLoaderData>();
-  const revalidator = useRevalidator();
+  const { nodes: loadedNodes, edges: loadedEdges, people: loadedPeople, relations: loadedRelations } = useLoaderData<GenealogyLoaderData>();
   const [graph, setGraph] = useState(() => ({ nodes: loadedNodes, edges: loadedEdges }));
+  const [people, setPeople] = useState(loadedPeople);
+  const [relations, setRelations] = useState(loadedRelations);
   const [editMode, setEditMode] = useState(false);
   const [draft, setDraft] = useState<RelationDraft | null>(null);
   const [editingPerson, setEditingPerson] = useState<Person | null>(null);
@@ -176,8 +177,75 @@ export function Home() {
   );
 
   useEffect(() => {
-    setGraph({ nodes: loadedNodes, edges: loadedEdges });
-  }, [loadedNodes, loadedEdges]);
+    let active = true;
+    let peopleReady = false;
+    let relationsReady = false;
+    let scheduledFrame: number | null = null;
+    let buildVersion = 0;
+    let currentPeople = new Map(loadedPeople.map((person) => [person.id, person]));
+    let currentRelations = loadedRelations;
+
+    const scheduleGraphBuild = () => {
+      if (!peopleReady || !relationsReady || scheduledFrame !== null) return;
+      scheduledFrame = requestAnimationFrame(() => {
+        scheduledFrame = null;
+        const referencedPersonIds = new Set<string>();
+        for (const relation of currentRelations) {
+          referencedPersonIds.add(relation.first.id);
+          if (relation.second?.id) referencedPersonIds.add(relation.second.id);
+          if (relation.type === "parent") referencedPersonIds.add(relation.person.id);
+        }
+        if ([...referencedPersonIds].some((personId) => !currentPeople.has(personId))) return;
+
+        const version = ++buildVersion;
+        void buildGenealogyGraph(currentRelations, currentPeople)
+          .then((nextGraph) => {
+            if (active && version === buildVersion) setGraph(nextGraph);
+          })
+          .catch((error) => {
+            console.error("Nie udało się przebudować drzewa ze snapshotu Firestore.", error);
+          });
+      });
+    };
+
+    const unsubscribePeople = onSnapshot(
+      collection(db, "people"),
+      (snapshot) => {
+        const changedPersonIds = new Set(snapshot.docChanges().map((change) => change.doc.id));
+        const referencedPersonIds = new Set<string>();
+        for (const relation of currentRelations) {
+          referencedPersonIds.add(relation.first.id);
+          if (relation.second?.id) referencedPersonIds.add(relation.second.id);
+          if (relation.type === "parent") referencedPersonIds.add(relation.person.id);
+        }
+        const affectsGraph = !peopleReady || [...changedPersonIds].some((personId) => referencedPersonIds.has(personId));
+        const nextPeople = snapshot.docs.map((document) => normalizePerson(document.id, document.data() as Record<string, unknown>));
+        currentPeople = new Map(nextPeople.map((person) => [person.id, person]));
+        peopleReady = true;
+        setPeople(nextPeople);
+        if (affectsGraph) scheduleGraphBuild();
+      },
+      (error) => console.error("Listener people został przerwany.", error),
+    );
+    const unsubscribeRelations = onSnapshot(
+      collection(db, "relations"),
+      (snapshot) => {
+        currentRelations = snapshot.docs.map((document) => ({ id: document.id, ...document.data() })) as Relation[];
+        relationsReady = true;
+        setRelations(currentRelations);
+        scheduleGraphBuild();
+      },
+      (error) => console.error("Listener relations został przerwany.", error),
+    );
+
+    return () => {
+      active = false;
+      buildVersion += 1;
+      if (scheduledFrame !== null) cancelAnimationFrame(scheduledFrame);
+      unsubscribePeople();
+      unsubscribeRelations();
+    };
+  }, [loadedPeople, loadedRelations]);
   const onConnectEnd: OnConnectEnd = useCallback(
     (_event, connectionState) => {
       if (!editMode || !connectionState.fromNode || !connectionState.fromHandle || connectionState.fromHandle.type !== "source") return;
@@ -240,7 +308,6 @@ export function Home() {
     const batch = writeBatch(db);
     const personRef = target.mode === "existing" ? doc(db, "people", target.personId) : doc(collection(db, "people"));
     const relationRef = doc(collection(db, "relations"));
-    let createdRelation: Relation;
 
     if (target.mode === "new") {
       batch.set(personRef, {
@@ -277,7 +344,6 @@ export function Home() {
       const sourceRef = doc(db, "people", activeDraft.sourcePersonId);
       const first = activeDraft.sourceRole === "first" ? sourceRef : personRef;
       const second = activeDraft.sourceRole === "first" ? personRef : sourceRef;
-      createdRelation = { id: relationRef.id, type: "partner", first, second, root: false };
       batch.set(relationRef, { type: "partner", first, second, root: false });
     } else {
       if (personRef.id === activeDraft.firstId || personRef.id === activeDraft.secondId) {
@@ -294,33 +360,19 @@ export function Home() {
       const first = doc(db, "people", activeDraft.firstId);
       const second = activeDraft.secondId ? doc(db, "people", activeDraft.secondId) : null;
       const parentship = activeDraft.parentshipId ? doc(db, "relations", activeDraft.parentshipId) : null;
-      createdRelation = {
-        id: relationRef.id,
-        type: "parent",
-        first,
-        second,
-        person: personRef,
-        parentship,
-        root: false,
-      };
+
       batch.set(relationRef, { type: "parent", first, second, person: personRef, parentship, root: false });
     }
 
     await batch.commit();
-    const nextGraph = await buildGenealogyGraph([...relations, createdRelation]);
-    setGraph(nextGraph);
     setDraft(null);
-    void revalidator.revalidate();
   };
   const savePerson = async (personId: string, values: NewPersonValues) => {
     await updateDoc(doc(db, "people", personId), {
       ...editablePersonPayload(values),
       updatedAt: serverTimestamp(),
     });
-    const nextGraph = await buildGenealogyGraph(relations);
-    setGraph(nextGraph);
     setEditingPerson(null);
-    void revalidator.revalidate();
   };
   return (
     <Canvas>
