@@ -92,6 +92,8 @@ function getPersonNode(id: string, person: Person, position: { x: number; y: num
     id,
     type: "person",
     position,
+    width: PERSON_W,
+    height: PERSON_H,
     data: { ...person, themeColor } as PersonNodeData,
     draggable: true,
   };
@@ -551,6 +553,8 @@ async function placeSidePartnership(
     nodes.push({
       id: partnerRel.id,
       type: "relation",
+      width: RELATION_SIZE,
+      height: RELATION_SIZE,
       position: { x: relationX, y: relationY },
       data: { color: branchColor, layoutPreset: preset },
       draggable: true,
@@ -576,6 +580,8 @@ async function placeSidePartnership(
     nodes.push({
       id: partnerRel.id,
       type: "relation",
+      width: RELATION_SIZE,
+      height: RELATION_SIZE,
       position: { x: relationX, y: relationY },
       data: { color: branchColor, layoutPreset: preset },
       draggable: true,
@@ -726,6 +732,8 @@ async function placePartnership(
   nodes.push({
     id: partnerRel.id,
     type: "relation",
+    width: RELATION_SIZE,
+    height: RELATION_SIZE,
     position: { x: relationX, y: relationY },
     data: { color: branchColor, layoutPreset: preset, root: partnerRel.root },
     draggable: true,

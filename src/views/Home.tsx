@@ -119,6 +119,7 @@ export function Home() {
 
       setExportingPng(variant);
       setExportPngError(null);
+      await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
       try {
         await downloadGenealogyExport(viewport, diagramNodes, variant);
       } catch (error) {
@@ -396,6 +397,7 @@ export function Home() {
         elementsSelectable={layoutEditMode}
         snapToGrid={layoutEditMode}
         snapGrid={[16, 16]}
+        onlyRenderVisibleElements={!exportingPng}
         connectOnClick={false}
         onConnectEnd={onConnectEnd}
         onInit={layout.onInit}
