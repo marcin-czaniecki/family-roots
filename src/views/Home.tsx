@@ -1,6 +1,6 @@
 import { Background, type Edge, type Node, type OnConnectEnd, Panel, ReactFlow, useReactFlow } from "@xyflow/react";
 import { collection, doc, serverTimestamp, updateDoc, writeBatch } from "firebase/firestore";
-import { AlertTriangle, Download, Eye, Move, Network, Pencil, PinOff, Redo2, RotateCcw, Save, Undo2, X } from "lucide-react";
+import { AlertTriangle, Download, Eye, Move, Network, Pencil, PinOff, Printer, Redo2, RotateCcw, Save, Undo2, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLoaderData } from "react-router";
 import styled from "styled-components";
@@ -11,7 +11,7 @@ import { matchesPersonQuery, personDatesOrId, personName } from "@/entities/pers
 import type { Person } from "@/entities/person/types";
 import type { ParentRelation, PartnerRelation, Relation, TreeLayoutPreset } from "@/entities/relation/types";
 import { useAuth } from "@/features/auth/AuthProvider";
-import { downloadGenealogyPng } from "@/features/exportGenealogyPng";
+import { downloadGenealogyExport, type GenealogyExportVariant } from "@/features/exportGenealogyPng";
 import { DEFAULT_TREE_LAYOUT_PRESET, edgeTypes, nodeTypes, TREE_LAYOUT_PRESET_OPTIONS } from "@/features/genealogyLayout";
 import { deletePersonWithRelations, getPersonDeletionImpact } from "@/features/personDeletion";
 import { emptyPersonForm, type PersonFormValues, personFormPayload, personToForm, validatePersonForm } from "@/features/personForm";
@@ -73,7 +73,7 @@ export function Home() {
   const [interactionMode, setInteractionMode] = useState<InteractionMode>("view");
   const [showBirthSurname, setShowBirthSurname] = useState(false);
   const [lineEditMode, setLineEditMode] = useState(false);
-  const [exportingPng, setExportingPng] = useState(false);
+  const [exportingPng, setExportingPng] = useState<GenealogyExportVariant | null>(null);
   const [exportPngError, setExportPngError] = useState<string | null>(null);
   const [draft, setDraft] = useState<RelationDraft | null>(null);
   const [editingPerson, setEditingPerson] = useState<Person | null>(null);
@@ -108,25 +108,28 @@ export function Home() {
   const layout = useTreeLayoutEditor(automaticDiagramNodes, graph.edges, rootId, layoutEditMode);
   const edgeLayout = useTreeEdgeRoutes(graph.edges, rootId, layoutEditMode && lineEditMode);
   const diagramNodes = layout.nodes;
-  const downloadTreePng = useCallback(async () => {
-    if (exportingPng) return;
-    const viewport = canvasRef.current?.querySelector<HTMLElement>(".react-flow__viewport");
-    if (!viewport) {
-      setExportPngError("Nie udało się znaleźć drzewa do zapisania.");
-      return;
-    }
+  const downloadTreeExport = useCallback(
+    async (variant: GenealogyExportVariant) => {
+      if (exportingPng) return;
+      const viewport = canvasRef.current?.querySelector<HTMLElement>(".react-flow__viewport");
+      if (!viewport) {
+        setExportPngError("Nie udało się znaleźć drzewa do zapisania.");
+        return;
+      }
 
-    setExportingPng(true);
-    setExportPngError(null);
-    try {
-      await downloadGenealogyPng(viewport, diagramNodes);
-    } catch (error) {
-      console.error("Nie udało się pobrać drzewa jako PNG.", error);
-      setExportPngError(error instanceof Error ? error.message : "Nie udało się pobrać drzewa jako PNG.");
-    } finally {
-      setExportingPng(false);
-    }
-  }, [diagramNodes, exportingPng]);
+      setExportingPng(variant);
+      setExportPngError(null);
+      try {
+        await downloadGenealogyExport(viewport, diagramNodes, variant);
+      } catch (error) {
+        console.error("Nie udało się pobrać drzewa.", error);
+        setExportPngError(error instanceof Error ? error.message : "Nie udało się pobrać drzewa.");
+      } finally {
+        setExportingPng(null);
+      }
+    },
+    [diagramNodes, exportingPng],
+  );
   const [layoutRelationId, setLayoutRelationId] = useState(() => loadedRelations.find((relation) => relation.root)?.id ?? loadedRelations[0]?.id ?? "");
   const [savingRelationPreset, setSavingRelationPreset] = useState(false);
   const [relationPresetError, setRelationPresetError] = useState<string | null>(null);
@@ -524,13 +527,24 @@ export function Home() {
               </ModeControl>
               <TreeExportButton
                 type="button"
-                onClick={() => void downloadTreePng()}
-                disabled={exportingPng || diagramNodes.length === 0}
+                onClick={() => void downloadTreeExport("screen")}
+                disabled={Boolean(exportingPng) || diagramNodes.length === 0}
                 aria-label="Pobierz całe drzewo jako PNG"
-                title={exportingPng ? "Generowanie PNG" : "Pobierz całe drzewo jako PNG"}
+                title={exportingPng === "screen" ? "Generowanie PNG" : "Pobierz całe drzewo jako PNG"}
               >
                 <Download size={17} aria-hidden="true" />
-                <span>{exportingPng ? "..." : "PNG"}</span>
+                <span>{exportingPng === "screen" ? "..." : "PNG"}</span>
+              </TreeExportButton>
+              <TreeExportButton
+                type="button"
+                $secondary
+                onClick={() => void downloadTreeExport("print")}
+                disabled={Boolean(exportingPng) || diagramNodes.length === 0}
+                aria-label="Pobierz całe drzewo jako SVG do druku"
+                title={exportingPng === "print" ? "Generowanie SVG do druku" : "Pobierz skalowalny SVG do druku"}
+              >
+                <Printer size={17} aria-hidden="true" />
+                <span>{exportingPng === "print" ? "..." : "Druk SVG"}</span>
               </TreeExportButton>
             </TreeDisplayControls>
             {exportPngError ? <TreeExportError role="alert">{exportPngError}</TreeExportError> : null}
@@ -1451,6 +1465,14 @@ const Canvas = styled.div`
   .genealogy-flow.is-exporting [data-layout-selected="true"] {
     outline: none !important;
   }
+
+  .genealogy-flow.is-print-export .react-flow__background {
+    opacity: 0 !important;
+  }
+
+  .genealogy-flow.is-print-export .react-flow__edge path[id$="-halo"] {
+    stroke: #fff !important;
+  }
 `;
 
 const DiagramSearchPanel = styled.section`
@@ -1746,12 +1768,13 @@ const AutomaticLayoutError = styled(AutomaticLayoutStatus)`
 `;
 const TreeDisplayControls = styled.div`
   display: flex;
+  flex-wrap: wrap;
   align-items: stretch;
   gap: 0.45rem;
   max-width: calc(100vw - 2rem);
 `;
 
-const TreeExportButton = styled.button`
+const TreeExportButton = styled.button<{ $secondary?: boolean }>`
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1759,8 +1782,8 @@ const TreeExportButton = styled.button`
   min-width: 4.6rem;
   min-height: 2.65rem;
   border: 1px solid #3d5a4c;
-  background: #3d5a4c;
-  color: #fff;
+  background: ${({ $secondary }) => ($secondary ? "#fff" : "#3d5a4c")};
+  color: ${({ $secondary }) => ($secondary ? "#263e32" : "#fff")};
   padding: 0 0.7rem;
   font: inherit;
   font-size: 0.78rem;
@@ -1769,7 +1792,7 @@ const TreeExportButton = styled.button`
 
   &:hover:not(:disabled),
   &:focus-visible {
-    background: #334d41;
+    background: ${({ $secondary }) => ($secondary ? "#e8efe9" : "#334d41")};
     outline: 2px solid rgba(61, 90, 76, 0.22);
     outline-offset: 2px;
   }
