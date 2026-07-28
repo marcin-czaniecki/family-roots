@@ -374,6 +374,21 @@ export function Home() {
                 <span>Automatyczny układ</span>
               </AutomaticLayoutHeader>
               <AutomaticLayoutField>
+                <AutomaticLayoutLabel htmlFor="layout-movement-mode">Przeciąganie</AutomaticLayoutLabel>
+                <AutomaticLayoutMovementControl>
+                  <ModeInput
+                    id="layout-movement-mode"
+                    type="checkbox"
+                    checked={layout.movementMode === "node"}
+                    onChange={(event) => layout.setMovementMode(event.target.checked ? "node" : "branch")}
+                  />
+                  <ModeTrack aria-hidden="true" />
+                  <AutomaticLayoutMovementValue>
+                    {layout.movementMode === "branch" ? "Cała gałąź" : "Tylko kafelek"}
+                  </AutomaticLayoutMovementValue>
+                </AutomaticLayoutMovementControl>
+              </AutomaticLayoutField>
+              <AutomaticLayoutField>
                 <AutomaticLayoutLabel htmlFor="tree-layout-preset">Całe drzewo</AutomaticLayoutLabel>
                 <AutomaticLayoutSelect
                   id="tree-layout-preset"
@@ -1568,6 +1583,35 @@ const AutomaticLayoutLabel = styled.label`
   font-size: 0.74rem;
   line-height: 1.2;
   font-weight: 700;
+`;
+
+const AutomaticLayoutMovementControl = styled.label`
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-height: 2.25rem;
+  cursor: pointer;
+  user-select: none;
+
+  ${ModeInput}:checked + ${ModeTrack} {
+    background: #3d5a4c;
+  }
+
+  ${ModeInput}:checked + ${ModeTrack}::after {
+    transform: translateX(1.1rem);
+  }
+
+  ${ModeInput}:focus-visible + ${ModeTrack} {
+    outline: 2px solid #3d5a4c;
+    outline-offset: 2px;
+  }
+`;
+
+const AutomaticLayoutMovementValue = styled.span`
+  color: #1c2a22;
+  font-size: 0.8rem;
+  font-weight: 650;
 `;
 
 const AutomaticLayoutSelect = styled.select`

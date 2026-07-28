@@ -4,9 +4,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { db } from "@/firebase";
 import { PERSON_H, PERSON_W, RELATION_SIZE } from "./genealogyLayout";
 
-export const TREE_LAYOUT_ALGORITHM_VERSION = "genealogy-v1";
+export const TREE_LAYOUT_ALGORITHM_VERSION = "genealogy-v2-presets";
 
 export type LayoutStatus = "persisted" | "dirty" | "rebased" | null;
+export type LayoutMovementMode = "branch" | "node";
 
 export type TreeLayoutPlacement = {
   key: string;
@@ -40,6 +41,7 @@ type StableNodeCacheEntry = {
   status: LayoutStatus;
   selected: boolean;
   collision: boolean;
+  movementMode: LayoutMovementMode;
 };
 
 const COLLISION_PADDING = 12;
@@ -187,6 +189,7 @@ export function useTreeLayoutEditor(autoNodes: Node[], edges: Edge[], rootId: st
   const [history, setHistory] = useState<PlacementDraft[]>(() => [new Map()]);
   const [historyIndex, setHistoryIndex] = useState(0);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [movementMode, setMovementMode] = useState<LayoutMovementMode>("branch");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const dragContext = useRef<DragContext | null>(null);
@@ -243,7 +246,7 @@ export function useTreeLayoutEditor(autoNodes: Node[], edges: Edge[], rootId: st
       const currentNode = currentNodes.find((node) => node.id === startNodeId);
       if (!currentNode) return [];
 
-      const nodeIds = branchGroupIds(startNodeId, currentNodes, edges);
+      const nodeIds = movementMode === "branch" ? branchGroupIds(startNodeId, currentNodes, edges) : [startNodeId];
       const selectedIds = new Set(nodeIds);
       const starts = new Map<string, XYPosition>();
       for (const node of currentNodes) {
@@ -261,7 +264,7 @@ export function useTreeLayoutEditor(autoNodes: Node[], edges: Edge[], rootId: st
 
       return nodeIds;
     },
-    [edges, enabled],
+    [edges, enabled, movementMode],
   );
 
   const positionedNodes = useMemo(() => {
@@ -309,7 +312,8 @@ export function useTreeLayoutEditor(autoNodes: Node[], edges: Edge[], rootId: st
         previous.enabled === enabled &&
         previous.status === status &&
         previous.selected === selected &&
-        previous.collision === collision
+        previous.collision === collision &&
+        previous.movementMode === movementMode
       ) {
         nextCache.set(node.id, previous);
         return previous.node;
@@ -331,6 +335,7 @@ export function useTreeLayoutEditor(autoNodes: Node[], edges: Edge[], rootId: st
         status,
         selected,
         collision,
+        movementMode,
       });
       return stableNode;
     });
@@ -340,7 +345,7 @@ export function useTreeLayoutEditor(autoNodes: Node[], edges: Edge[], rootId: st
       nodes: stableNodes,
       collisionCount: collisions.count,
     };
-  }, [autoNodes, draft, enabled, onLayoutPointerDown, persisted, rootId, selectedNodeId]);
+  }, [autoNodes, draft, enabled, movementMode, onLayoutPointerDown, persisted, rootId, selectedNodeId]);
 
   useEffect(() => {
     if (dragContext.current) return;
@@ -365,7 +370,7 @@ export function useTreeLayoutEditor(autoNodes: Node[], edges: Edge[], rootId: st
 
       const currentNodesById = new Map(positionedNodes.nodes.map((currentNode) => [currentNode.id, currentNode]));
       const groupRelationId = node.type === "relation" ? node.id : null;
-      const nodeIds = branchGroupIds(node.id, positionedNodes.nodes, edges);
+      const nodeIds = movementMode === "branch" ? branchGroupIds(node.id, positionedNodes.nodes, edges) : [node.id];
       const starts = new Map<string, XYPosition>();
 
       for (const nodeId of nodeIds) {
@@ -377,7 +382,7 @@ export function useTreeLayoutEditor(autoNodes: Node[], edges: Edge[], rootId: st
       if (!draggedStart) return;
       dragContext.current = { draggedId: node.id, draggedStart, groupRelationId, starts };
     },
-    [edges, enabled, positionedNodes.nodes],
+    [edges, enabled, movementMode, positionedNodes.nodes],
   );
 
   const onNodeDrag: OnNodeDrag = useCallback(() => {}, []);
@@ -528,6 +533,8 @@ export function useTreeLayoutEditor(autoNodes: Node[], edges: Edge[], rootId: st
     persistedCount: persisted.size,
     placementsReady,
     selectedNodeId,
+    movementMode,
+    setMovementMode,
     saving,
     error,
     canUndo: historyIndex > 0,
