@@ -25,7 +25,7 @@ type PersonResolver = (id: string) => Promise<Person>;
 
 export const PERSON_W = 360;
 export const PERSON_H = 240;
-export const RELATION_SIZE = 36;
+export const RELATION_SIZE = 44;
 export const DEFAULT_TREE_LAYOUT_PRESET: TreeLayoutPreset = "compact";
 export const TREE_LAYOUT_PRESET_OPTIONS: ReadonlyArray<{ value: TreeLayoutPreset; label: string; description: string }> = [
   { value: "compact", label: "Zwarty", description: "Najmniejsze bezpieczne odstępy między gałęziami." },
@@ -42,9 +42,9 @@ type LayoutRules = {
 };
 
 const LAYOUT_RULES: Record<TreeLayoutPreset, LayoutRules> = {
-  compact: { siblingGap: 24, coupleGap: 28, multiPartnerGap: 48 },
-  balanced: { siblingGap: 64, coupleGap: 40, multiPartnerGap: 96 },
-  spacious: { siblingGap: 96, coupleGap: 56, multiPartnerGap: 144 },
+  compact: { siblingGap: 24, coupleGap: RELATION_SIZE + 16, multiPartnerGap: 48 },
+  balanced: { siblingGap: 64, coupleGap: RELATION_SIZE + 24, multiPartnerGap: 96 },
+  spacious: { siblingGap: 96, coupleGap: RELATION_SIZE + 36, multiPartnerGap: 144 },
 };
 
 function rulesFor(preset: TreeLayoutPreset): LayoutRules {

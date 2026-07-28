@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { db } from "@/firebase";
 import { PERSON_H, PERSON_W, RELATION_SIZE } from "./genealogyLayout";
 
-export const TREE_LAYOUT_ALGORITHM_VERSION = "genealogy-v2-presets";
+export const TREE_LAYOUT_ALGORITHM_VERSION = "genealogy-v3-relation-spacing";
 
 export type LayoutStatus = "persisted" | "dirty" | "rebased" | null;
 export type LayoutMovementMode = "branch" | "node";

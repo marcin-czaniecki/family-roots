@@ -30,8 +30,8 @@ const Node = styled.div<{ $color: string | null; $growsUp: boolean }>`
   --fill: ${({ $color }) => ($color ? `color-mix(in srgb, ${$color} 14%, #f7f4ef)` : "#f7f4ef")};
 
   position: relative;
-  width: 36px;
-  height: 36px;
+  width: 44px;
+  height: 44px;
   border-radius: 50%;
   background: var(--fill);
   border: 1.5px solid var(--ring);
