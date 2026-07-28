@@ -28,7 +28,7 @@ export const PERSON_H = 240;
 export const RELATION_SIZE = 44;
 export const DEFAULT_TREE_LAYOUT_PRESET: TreeLayoutPreset = "compact";
 export const TREE_LAYOUT_PRESET_OPTIONS: ReadonlyArray<{ value: TreeLayoutPreset; label: string; description: string }> = [
-  { value: "compact", label: "Zwarty", description: "Najmniejsze bezpieczne odstępy między gałęziami." },
+  { value: "compact", label: "Zwarty warstwowy", description: "Rodziny są ciasno układane w rzędach kolejnych pokoleń." },
   { value: "balanced", label: "Zrównoważony", description: "Odstępy odpowiadające poprzedniemu układowi." },
   { value: "spacious", label: "Przestronny", description: "Więcej miejsca dla rozbudowanych linii." },
 ];
@@ -343,7 +343,8 @@ function subtreeWidth(
     children.reduce((total, relation) => {
       const childPreset = presetForRelation(relation, inheritedPreset);
       return total + subtreeWidth(relations, relation.person.id, undefined, nextAncestors, childPreset);
-    }, 0) + rules.siblingGap * (children.length - 1);
+    }, 0) +
+    rules.siblingGap * (children.length - 1);
   return Math.max(PERSON_W, childrenWidth);
 }
 /** Reuses person.id on first placement; later marriages of a spouse may get a duplicate card. */
@@ -365,7 +366,7 @@ function upsertPersonNode(
   return nodeId;
 }
 
-function addDescentEdge(sourceId: string, childId: string, lane: DescentEdgeData["lane"], edges: Edge[], color: string | null) {
+function addDescentEdge(sourceId: string, childId: string, lane: DescentEdgeData["lane"], edges: Edge[], color: string | null, layoutPreset: TreeLayoutPreset) {
   const id = `${sourceId}->${childId}`;
   if (edges.some((edge) => edge.id === id)) return;
   edges.push({
@@ -375,7 +376,7 @@ function addDescentEdge(sourceId: string, childId: string, lane: DescentEdgeData
     sourceHandle: "child",
     targetHandle: "parent",
     type: "descent",
-    data: { lane },
+    data: { lane, layoutPreset },
     style: color ? { stroke: color } : undefined,
   });
 }
@@ -493,10 +494,10 @@ async function placeKidsForPartnership(
             );
 
       if (side === "center") {
-        addDescentEdge(partnerRel.id, childNodeId, "union", edges, childColor);
+        addDescentEdge(partnerRel.id, childNodeId, "union", edges, childColor, childPreset);
       } else {
         const parentNodeId = side === "left" ? leftNodeId : (rightNodeId ?? leftNodeId);
-        addDescentEdge(parentNodeId, childNodeId, "direct", edges, childColor);
+        addDescentEdge(parentNodeId, childNodeId, "direct", edges, childColor, childPreset);
       }
       cursor += width + rules.siblingGap;
     }
@@ -835,7 +836,7 @@ async function placeSingleParentFamily(
             child.preset,
           );
 
-    addDescentEdge(parentNodeId, childNodeId, "direct", edges, childColor);
+    addDescentEdge(parentNodeId, childNodeId, "direct", edges, childColor, child.preset);
     cursor += child.width + rules.siblingGap;
   }
 
@@ -867,6 +868,274 @@ function centerTreeUnderRoot(nodes: Node[], edges: Edge[], rootRelationId: strin
         },
   );
 }
+type RowUnit = {
+  id: string;
+  nodeIds: string[];
+  originalCenterX: number;
+  preset: TreeLayoutPreset;
+};
+
+const COMPACT_ROW_GAP = 48;
+const EDGE_LANE_MIN_OFFSET = 28;
+const EDGE_LANE_MAX_OFFSET = 136;
+const EDGE_LANE_PREFERRED_GAP = 14;
+const EDGE_LANE_HORIZONTAL_CLEARANCE = 12;
+const ROW_GAP_BY_PRESET: Record<TreeLayoutPreset, number> = {
+  compact: COMPACT_ROW_GAP,
+  balanced: 64,
+  spacious: 96,
+};
+const PRESET_RANK: Record<TreeLayoutPreset, number> = {
+  compact: 0,
+  balanced: 1,
+  spacious: 2,
+};
+
+function nodeWidth(node: Node): number {
+  return node.type === "person" ? PERSON_W : RELATION_SIZE;
+}
+
+function nodeCenterX(node: Node): number {
+  return node.position.x + nodeWidth(node) / 2;
+}
+
+function isTreeLayoutPreset(value: unknown): value is TreeLayoutPreset {
+  return value === "compact" || value === "balanced" || value === "spacious";
+}
+
+function widestLayoutPreset(presets: Array<TreeLayoutPreset | null | undefined>): TreeLayoutPreset {
+  return presets.reduce<TreeLayoutPreset>((widest, preset) => (preset && PRESET_RANK[preset] > PRESET_RANK[widest] ? preset : widest), "compact");
+}
+
+function nodeLayoutPreset(node: Node): TreeLayoutPreset | null {
+  const preset = (node.data as { layoutPreset?: unknown } | undefined)?.layoutPreset;
+  return isTreeLayoutPreset(preset) ? preset : null;
+}
+
+function edgeLayoutPreset(edge: Edge): TreeLayoutPreset | null {
+  const preset = (edge.data as DescentEdgeData | undefined)?.layoutPreset;
+  return isTreeLayoutPreset(preset) ? preset : null;
+}
+
+function rowGapBetween(first: RowUnit, second: RowUnit): number {
+  return Math.max(ROW_GAP_BY_PRESET[first.preset], ROW_GAP_BY_PRESET[second.preset]);
+}
+
+function projectNonDecreasing(values: number[]): number[] {
+  const blocks: Array<{ start: number; end: number; sum: number; count: number }> = [];
+
+  for (let index = 0; index < values.length; index += 1) {
+    blocks.push({ start: index, end: index, sum: values[index], count: 1 });
+    while (blocks.length > 1) {
+      const right = blocks[blocks.length - 1];
+      const left = blocks[blocks.length - 2];
+      if (left.sum / left.count <= right.sum / right.count) break;
+      blocks.splice(blocks.length - 2, 2, {
+        start: left.start,
+        end: right.end,
+        sum: left.sum + right.sum,
+        count: left.count + right.count,
+      });
+    }
+  }
+
+  const projected = new Array<number>(values.length);
+  for (const block of blocks) {
+    const value = block.sum / block.count;
+    for (let index = block.start; index <= block.end; index += 1) projected[index] = value;
+  }
+  return projected;
+}
+
+/**
+ * Packs same-generation family units without flattening branch-specific presets.
+ * Balanced and spacious branches retain their recursive offsets from the legacy layout.
+ */
+function compactGenerationRows(nodes: Node[], edges: Edge[]): Node[] {
+  if (nodes.length < 2) return nodes;
+
+  const nodeById = new Map(nodes.map((node) => [node.id, node]));
+  const parent = new Map(nodes.map((node) => [node.id, node.id]));
+  const find = (id: string): string => {
+    const current = parent.get(id) ?? id;
+    if (current === id) return id;
+    const root = find(current);
+    parent.set(id, root);
+    return root;
+  };
+  const union = (firstId: string, secondId: string) => {
+    const firstRoot = find(firstId);
+    const secondRoot = find(secondId);
+    if (firstRoot !== secondRoot) parent.set(secondRoot, firstRoot);
+  };
+
+  for (const edge of edges) {
+    if (edge.type === "partner" && nodeById.has(edge.source) && nodeById.has(edge.target)) {
+      union(edge.source, edge.target);
+    }
+  }
+
+  const componentNodeIds = new Map<string, string[]>();
+  for (const node of nodes) {
+    const componentId = find(node.id);
+    const ids = componentNodeIds.get(componentId) ?? [];
+    ids.push(node.id);
+    componentNodeIds.set(componentId, ids);
+  }
+
+  const componentByNodeId = new Map<string, string>();
+  for (const [componentId, nodeIds] of componentNodeIds) {
+    for (const nodeId of nodeIds) componentByNodeId.set(nodeId, componentId);
+  }
+
+  const incomingEdgesByComponent = new Map<string, Edge[]>();
+  for (const edge of edges) {
+    if (edge.type !== "descent") continue;
+    const targetComponentId = componentByNodeId.get(edge.target);
+    const sourceComponentId = componentByNodeId.get(edge.source);
+    if (!targetComponentId || targetComponentId === sourceComponentId) continue;
+    const incoming = incomingEdgesByComponent.get(targetComponentId) ?? [];
+    incoming.push(edge);
+    incomingEdgesByComponent.set(targetComponentId, incoming);
+  }
+
+  const rows = new Map<number, RowUnit[]>();
+  for (const [id, nodeIds] of componentNodeIds) {
+    const componentNodes = nodeIds.map((nodeId) => nodeById.get(nodeId)).filter((node): node is Node => Boolean(node));
+    const personNode = componentNodes.find((node) => node.type === "person");
+    const y = personNode?.position.y ?? componentNodes[0]?.position.y ?? 0;
+    const minX = Math.min(...componentNodes.map((node) => node.position.x));
+    const maxX = Math.max(...componentNodes.map((node) => node.position.x + nodeWidth(node)));
+    const preset = widestLayoutPreset([...componentNodes.map(nodeLayoutPreset), ...(incomingEdgesByComponent.get(id) ?? []).map(edgeLayoutPreset)]);
+    const unit: RowUnit = { id, nodeIds, originalCenterX: (minX + maxX) / 2, preset };
+    const row = rows.get(y) ?? [];
+    row.push(unit);
+    rows.set(y, row);
+  }
+
+  const positioned = new Map(nodes.map((node) => [node.id, { ...node, position: { ...node.position } }]));
+  const generationYs = [...rows.keys()].sort((first, second) => (TREE_GROWS_UP ? second - first : first - second));
+
+  for (const y of generationYs) {
+    const units = rows.get(y) ?? [];
+    const desiredCenter = new Map<string, number>();
+
+    for (const unit of units) {
+      const incomingCenters = (incomingEdgesByComponent.get(unit.id) ?? []).flatMap((edge) => {
+        const currentSource = positioned.get(edge.source);
+        const originalSource = nodeById.get(edge.source);
+        if (!currentSource) return [];
+        const currentCenter = nodeCenterX(currentSource);
+        if (unit.preset === "compact" || !originalSource) return [currentCenter];
+        return [currentCenter + unit.originalCenterX - nodeCenterX(originalSource)];
+      });
+      desiredCenter.set(
+        unit.id,
+        incomingCenters.length > 0 ? incomingCenters.reduce((total, center) => total + center, 0) / incomingCenters.length : unit.originalCenterX,
+      );
+    }
+
+    units.sort(
+      (first, second) =>
+        (desiredCenter.get(first.id) ?? first.originalCenterX) - (desiredCenter.get(second.id) ?? second.originalCenterX) ||
+        first.originalCenterX - second.originalCenterX,
+    );
+
+    const placements = units.map((unit) => {
+      const componentNodes = unit.nodeIds.map((nodeId) => positioned.get(nodeId)).filter((node): node is Node => Boolean(node));
+      const minX = Math.min(...componentNodes.map((node) => node.position.x));
+      const maxX = Math.max(...componentNodes.map((node) => node.position.x + nodeWidth(node)));
+      return { unit, currentCenter: (minX + maxX) / 2, width: maxX - minX, minimumCenter: 0 };
+    });
+
+    let minimumCenter = 0;
+    for (let index = 0; index < placements.length; index += 1) {
+      if (index > 0) {
+        minimumCenter += placements[index - 1].width / 2 + rowGapBetween(placements[index - 1].unit, placements[index].unit) + placements[index].width / 2;
+      }
+      placements[index].minimumCenter = minimumCenter;
+    }
+
+    const projected = projectNonDecreasing(
+      placements.map((placement) => (desiredCenter.get(placement.unit.id) ?? placement.unit.originalCenterX) - placement.minimumCenter),
+    );
+
+    for (let index = 0; index < placements.length; index += 1) {
+      const placement = placements[index];
+      const center = projected[index] + placement.minimumCenter;
+      const deltaX = center - placement.currentCenter;
+      for (const nodeId of placement.unit.nodeIds) {
+        const node = positioned.get(nodeId);
+        if (node) node.position.x += deltaX;
+      }
+    }
+  }
+
+  return nodes.map((node) => positioned.get(node.id) ?? node);
+}
+type DescentRouteGroup = {
+  edgeIds: string[];
+  minX: number;
+  maxX: number;
+  lane: number;
+};
+
+function routeDescentEdges(nodes: Node[], edges: Edge[]): Edge[] {
+  const nodeById = new Map(nodes.map((node) => [node.id, node]));
+  const groupsByGeneration = new Map<number, Map<string, DescentRouteGroup>>();
+
+  for (const edge of edges) {
+    if (edge.type !== "descent") continue;
+    const source = nodeById.get(edge.source);
+    const target = nodeById.get(edge.target);
+    if (!source || !target) continue;
+    const sourceX = source.position.x + nodeWidth(source) / 2;
+    const targetX = target.position.x + nodeWidth(target) / 2;
+    const generationGroups = groupsByGeneration.get(target.position.y) ?? new Map<string, DescentRouteGroup>();
+    const group = generationGroups.get(edge.source) ?? {
+      edgeIds: [],
+      minX: Math.min(sourceX, targetX),
+      maxX: Math.max(sourceX, targetX),
+      lane: 0,
+    };
+    group.edgeIds.push(edge.id);
+    group.minX = Math.min(group.minX, sourceX, targetX);
+    group.maxX = Math.max(group.maxX, sourceX, targetX);
+    generationGroups.set(edge.source, group);
+    groupsByGeneration.set(target.position.y, generationGroups);
+  }
+
+  const offsetByEdgeId = new Map<string, number>();
+  for (const generationGroups of groupsByGeneration.values()) {
+    const groups = [...generationGroups.values()].sort((first, second) => first.minX - second.minX || first.maxX - second.maxX);
+    const laneEnds: number[] = [];
+    for (const group of groups) {
+      let lane = laneEnds.findIndex((endX) => endX + EDGE_LANE_HORIZONTAL_CLEARANCE <= group.minX);
+      if (lane < 0) {
+        lane = laneEnds.length;
+        laneEnds.push(group.maxX);
+      } else {
+        laneEnds[lane] = group.maxX;
+      }
+      group.lane = lane;
+    }
+
+    const laneGap = laneEnds.length <= 1 ? 0 : Math.min(EDGE_LANE_PREFERRED_GAP, (EDGE_LANE_MAX_OFFSET - EDGE_LANE_MIN_OFFSET) / (laneEnds.length - 1));
+    for (const group of groups) {
+      const offset = EDGE_LANE_MIN_OFFSET + group.lane * laneGap;
+      for (const edgeId of group.edgeIds) offsetByEdgeId.set(edgeId, offset);
+    }
+  }
+
+  return edges.map((edge) =>
+    edge.type === "descent"
+      ? {
+          ...edge,
+          data: { ...(edge.data as DescentEdgeData | undefined), barOffset: offsetByEdgeId.get(edge.id) },
+        }
+      : edge,
+  );
+}
 export async function buildGenealogyGraph(
   relations: Relation[],
   peopleById?: ReadonlyMap<string, Person>,
@@ -892,8 +1161,12 @@ export async function buildGenealogyGraph(
   const edges: Edge[] = [];
 
   if (partnerRoot) {
+    const rootPreset = presetForRelation(partnerRoot, preset);
     await placePartnership(relations, partnerRoot, 0, 0, nodes, edges, new Set(), new Set(), resolvePerson, undefined, null, preset);
-    return { nodes: centerTreeUnderRoot(nodes, edges, partnerRoot.id), edges };
+    const centeredNodes = centerTreeUnderRoot(nodes, edges, partnerRoot.id);
+    const compactedNodes = rootPreset === "compact" ? compactGenerationRows(centeredNodes, edges) : centeredNodes;
+    const finalNodes = centerTreeUnderRoot(compactedNodes, edges, partnerRoot.id);
+    return { nodes: finalNodes, edges: routeDescentEdges(finalNodes, edges) };
   }
 
   if (!singleParentRoot) return { nodes, edges };
@@ -912,5 +1185,6 @@ export async function buildGenealogyGraph(
     presetForRelation(singleParentRoot, preset),
     true,
   );
-  return { nodes, edges };
+  const finalNodes = presetForRelation(singleParentRoot, preset) === "compact" ? compactGenerationRows(nodes, edges) : nodes;
+  return { nodes: finalNodes, edges: routeDescentEdges(finalNodes, edges) };
 }

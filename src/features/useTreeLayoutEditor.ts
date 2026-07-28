@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { db } from "@/firebase";
 import { PERSON_H, PERSON_W, RELATION_SIZE } from "./genealogyLayout";
 
-export const TREE_LAYOUT_ALGORITHM_VERSION = "genealogy-v3-relation-spacing";
+export const TREE_LAYOUT_ALGORITHM_VERSION = "genealogy-v6-branch-presets";
 
 export type LayoutStatus = "persisted" | "dirty" | "rebased" | null;
 export type LayoutMovementMode = "branch" | "node";
@@ -275,8 +275,7 @@ export function useTreeLayoutEditor(autoNodes: Node[], edges: Edge[], rootId: st
       const savedPlacement = persisted.get(key);
       const placement = hasDraft ? draftPlacement : savedPlacement;
       const savedNeedsRebase =
-        Boolean(savedPlacement) &&
-        (savedPlacement?.rootId !== rootId || savedPlacement.algorithmVersion !== TREE_LAYOUT_ALGORITHM_VERSION);
+        Boolean(savedPlacement) && (savedPlacement?.rootId !== rootId || savedPlacement.algorithmVersion !== TREE_LAYOUT_ALGORITHM_VERSION);
       const status: LayoutStatus = hasDraft ? "dirty" : savedPlacement ? (savedNeedsRebase ? "rebased" : "persisted") : null;
       const position = placement ? placementPosition(node, placement, rootId) : node.position;
       return {
