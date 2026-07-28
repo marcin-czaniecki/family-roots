@@ -1456,9 +1456,30 @@ function RelationEditor({
 
 const Canvas = styled.div`
   position: relative;
-  width: 100vw;
+  width: 100%;
   height: calc(100vh - 4rem);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  overscroll-behavior: none;
+  contain: layout paint;
+  isolation: isolate;
   background: #f3efe8;
+
+  @supports (height: 100svh) {
+    height: calc(100svh - 4rem);
+  }
+
+  @media (max-width: 720px), (pointer: coarse) {
+    .react-flow__background {
+      display: none;
+    }
+
+    .react-flow__node > article,
+    .react-flow__node > div {
+      transition: none !important;
+    }
+  }
 
   .genealogy-flow.is-exporting .react-flow__node button {
     display: none !important;

@@ -47,6 +47,10 @@ function MainLayout() {
 const AppShell = styled.div`
   min-height: 100vh;
   background: #f3efe8;
+
+  @supports (min-height: 100svh) {
+    min-height: 100svh;
+  }
   color: #1c2a22;
 `;
 
@@ -61,6 +65,11 @@ const TopBar = styled.header`
   background: rgba(247, 244, 239, 0.96);
   box-shadow: 0 2px 12px rgba(28, 42, 34, 0.08);
   backdrop-filter: blur(10px);
+
+  @media (max-width: 720px), (pointer: coarse) {
+    background: #f7f4ef;
+    backdrop-filter: none;
+  }
 `;
 
 const NavContent = styled.div`
@@ -180,6 +189,10 @@ const MainContent = styled.main`
   min-height: 100vh;
   box-sizing: border-box;
   padding-top: 4rem;
+
+  @supports (min-height: 100svh) {
+    min-height: 100svh;
+  }
 `;
 
 export const router = createBrowserRouter([

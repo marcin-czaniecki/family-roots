@@ -1,17 +1,6 @@
 import { type Node as FlowNode, Handle, type NodeProps, Position, useStoreApi } from "@xyflow/react";
-import styled, { keyframes } from "styled-components";
+import styled from "styled-components";
 import { TREE_GROWS_UP } from "@/features/genealogyDirection";
-
-const appear = keyframes`
-  from {
-    opacity: 0;
-    transform: scale(0.8);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1);
-  }
-`;
 
 type RelationNodeData = {
   color?: string | null;
@@ -36,10 +25,8 @@ const Node = styled.div<{ $color: string | null; $growsUp: boolean }>`
   background: var(--fill);
   border: 1.5px solid var(--ring);
   box-sizing: border-box;
-  animation: ${appear} 0.25s ease-out both;
 
   &[data-layout-mode="true"] {
-    animation: none;
     cursor: grab;
     touch-action: none;
   }

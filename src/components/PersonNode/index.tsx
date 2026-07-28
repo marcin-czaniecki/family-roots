@@ -1,5 +1,5 @@
 import { Handle, Position, useStoreApi } from "@xyflow/react";
-import styled, { css, keyframes } from "styled-components";
+import styled, { css } from "styled-components";
 import type { Person } from "@/entities/person/types";
 import { TREE_GROWS_UP } from "@/features/genealogyDirection";
 
@@ -17,17 +17,6 @@ type PersonNodeData = Person & {
   layoutNodeId?: string;
   onLayoutPointerDown?: (nodeId: string) => string[];
 };
-
-const fadeIn = keyframes`
-  from {
-    opacity: 0;
-    transform: translateY(var(--enter-y, 4px));
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-`;
 
 const Card = styled.article<{ $sex: Sex; $growsUp: boolean; $themeColor: string | null }>`
   --ink: ${({ $themeColor }) => ($themeColor ? `color-mix(in srgb, ${$themeColor} 22%, #1c2a22)` : "#1c2a22")};
@@ -57,7 +46,6 @@ const Card = styled.article<{ $sex: Sex; $growsUp: boolean; $themeColor: string 
           border-top: 3px solid var(--accent);
         `}
   box-shadow: 0 1px 0 rgba(28, 42, 34, 0.06);
-  animation: ${fadeIn} 0.35s ease-out both;
   transition:
     transform 0.2s ease,
     box-shadow 0.2s ease,
@@ -77,7 +65,6 @@ const Card = styled.article<{ $sex: Sex; $growsUp: boolean; $themeColor: string 
   }
 
   &[data-layout-mode="true"] {
-    animation: none;
     cursor: grab;
     touch-action: none;
   }
