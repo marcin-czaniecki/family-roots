@@ -1,7 +1,7 @@
 import { Background, type Edge, type Node, type OnConnectEnd, Panel, ReactFlow, useReactFlow } from "@xyflow/react";
 import { collection, doc, serverTimestamp, updateDoc, writeBatch } from "firebase/firestore";
-import { AlertTriangle, Eye, Move, Network, Pencil, PinOff, Redo2, RotateCcw, Save, Undo2, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { AlertTriangle, Download, Eye, Move, Network, Pencil, PinOff, Redo2, RotateCcw, Save, Undo2, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLoaderData } from "react-router";
 import styled from "styled-components";
 import { FitToTop } from "@/components/FitToTop";
@@ -11,6 +11,7 @@ import { matchesPersonQuery, personDatesOrId, personName } from "@/entities/pers
 import type { Person } from "@/entities/person/types";
 import type { ParentRelation, PartnerRelation, Relation, TreeLayoutPreset } from "@/entities/relation/types";
 import { useAuth } from "@/features/auth/AuthProvider";
+import { downloadGenealogyPng } from "@/features/exportGenealogyPng";
 import { DEFAULT_TREE_LAYOUT_PRESET, edgeTypes, nodeTypes, TREE_LAYOUT_PRESET_OPTIONS } from "@/features/genealogyLayout";
 import { deletePersonWithRelations, getPersonDeletionImpact } from "@/features/personDeletion";
 import { emptyPersonForm, type PersonFormValues, personFormPayload, personToForm, validatePersonForm } from "@/features/personForm";
@@ -70,8 +71,11 @@ export function Home() {
   );
   const [interactionMode, setInteractionMode] = useState<InteractionMode>("view");
   const [showBirthSurname, setShowBirthSurname] = useState(false);
+  const [exportingPng, setExportingPng] = useState(false);
+  const [exportPngError, setExportPngError] = useState<string | null>(null);
   const [draft, setDraft] = useState<RelationDraft | null>(null);
   const [editingPerson, setEditingPerson] = useState<Person | null>(null);
+  const canvasRef = useRef<HTMLDivElement>(null);
   const peopleById = useMemo(() => new Map(people.map((person) => [person.id, person])), [people]);
   const openPersonEditor = useCallback((person: Person) => {
     setDraft(null);
@@ -101,6 +105,25 @@ export function Home() {
   );
   const layout = useTreeLayoutEditor(automaticDiagramNodes, graph.edges, rootId, layoutEditMode);
   const diagramNodes = layout.nodes;
+  const downloadTreePng = useCallback(async () => {
+    if (exportingPng) return;
+    const viewport = canvasRef.current?.querySelector<HTMLElement>(".react-flow__viewport");
+    if (!viewport) {
+      setExportPngError("Nie udało się znaleźć drzewa do zapisania.");
+      return;
+    }
+
+    setExportingPng(true);
+    setExportPngError(null);
+    try {
+      await downloadGenealogyPng(viewport, diagramNodes);
+    } catch (error) {
+      console.error("Nie udało się pobrać drzewa jako PNG.", error);
+      setExportPngError(error instanceof Error ? error.message : "Nie udało się pobrać drzewa jako PNG.");
+    } finally {
+      setExportingPng(false);
+    }
+  }, [diagramNodes, exportingPng]);
   const [layoutRelationId, setLayoutRelationId] = useState(() => loadedRelations.find((relation) => relation.root)?.id ?? loadedRelations[0]?.id ?? "");
   const [savingRelationPreset, setSavingRelationPreset] = useState(false);
   const [relationPresetError, setRelationPresetError] = useState<string | null>(null);
@@ -336,7 +359,7 @@ export function Home() {
     setEditingPerson(null);
   };
   return (
-    <Canvas>
+    <Canvas ref={canvasRef}>
       <ReactFlow
         className={`genealogy-flow${dataEditMode ? " is-editing" : ""}${layoutEditMode ? " is-layout-editing" : ""}`}
         nodeTypes={nodeTypes}
@@ -461,11 +484,24 @@ export function Home() {
                 </ModeButton>
               </ModeSwitcher>
             ) : null}
-            <ModeControl>
-              <ModeInput type="checkbox" checked={showBirthSurname} onChange={(event) => setShowBirthSurname(event.target.checked)} />
-              <ModeTrack aria-hidden="true" />
-              <ModeLabel>Nazwisko rodowe</ModeLabel>
-            </ModeControl>
+            <TreeDisplayControls>
+              <ModeControl>
+                <ModeInput type="checkbox" checked={showBirthSurname} onChange={(event) => setShowBirthSurname(event.target.checked)} />
+                <ModeTrack aria-hidden="true" />
+                <ModeLabel>Nazwisko rodowe</ModeLabel>
+              </ModeControl>
+              <TreeExportButton
+                type="button"
+                onClick={() => void downloadTreePng()}
+                disabled={exportingPng || diagramNodes.length === 0}
+                aria-label="Pobierz całe drzewo jako PNG"
+                title={exportingPng ? "Generowanie PNG" : "Pobierz całe drzewo jako PNG"}
+              >
+                <Download size={17} aria-hidden="true" />
+                <span>{exportingPng ? "..." : "PNG"}</span>
+              </TreeExportButton>
+            </TreeDisplayControls>
+            {exportPngError ? <TreeExportError role="alert">{exportPngError}</TreeExportError> : null}
             {layoutEditMode ? (
               <LayoutTools>
                 <LayoutSummary $error={layout.collisionCount > 0}>
@@ -1362,6 +1398,14 @@ const Canvas = styled.div`
   width: 100vw;
   height: calc(100vh - 4rem);
   background: #f3efe8;
+
+  .genealogy-flow.is-exporting .react-flow__node button {
+    display: none !important;
+  }
+
+  .genealogy-flow.is-exporting [data-layout-selected="true"] {
+    outline: none !important;
+  }
 `;
 
 const DiagramSearchPanel = styled.section`
@@ -1655,6 +1699,51 @@ const AutomaticLayoutError = styled(AutomaticLayoutStatus)`
   color: #a33b32;
   line-height: 1.35;
 `;
+const TreeDisplayControls = styled.div`
+  display: flex;
+  align-items: stretch;
+  gap: 0.45rem;
+  max-width: calc(100vw - 2rem);
+`;
+
+const TreeExportButton = styled.button`
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  min-width: 4.6rem;
+  min-height: 2.65rem;
+  border: 1px solid #3d5a4c;
+  background: #3d5a4c;
+  color: #fff;
+  padding: 0 0.7rem;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+
+  &:hover:not(:disabled),
+  &:focus-visible {
+    background: #334d41;
+    outline: 2px solid rgba(61, 90, 76, 0.22);
+    outline-offset: 2px;
+  }
+
+  &:disabled {
+    border-color: #9ba59f;
+    background: #9ba59f;
+    cursor: wait;
+  }
+`;
+
+const TreeExportError = styled.p`
+  width: min(22rem, calc(100vw - 2rem));
+  margin: 0;
+  color: #a33b32;
+  font-size: 0.74rem;
+  line-height: 1.35;
+`;
+
 const ModeControls = styled.div`
   display: flex;
   flex-direction: column;
