@@ -415,7 +415,7 @@ export function Home() {
         maxZoom={1.6}
         style={{ ["--xy-edge-stroke" as string]: "#8a735a" }}
       >
-        <FitToTop key={autoLayoutPreset} ready={graph.nodes.length > 0 && layout.placementsReady} />
+        <FitToTop key={autoLayoutPreset} ready={graph.nodes.length > 0 && layout.placementsReady} rootId={rootId} />
         <Background color="#d5cbb8" gap={28} size={1} />
         <DiagramPersonSearch nodes={graph.nodes} />
         {layoutEditMode ? (
