@@ -10,6 +10,7 @@ import { PersonSearchSelect } from "@/components/PersonSearchSelect";
 import { matchesPersonQuery, personDatesOrId, personName } from "@/entities/person/label";
 import type { Person } from "@/entities/person/types";
 import type { ParentRelation, PartnerRelation, Relation, TreeLayoutPreset } from "@/entities/relation/types";
+import { useAuth } from "@/features/auth/AuthProvider";
 import { DEFAULT_TREE_LAYOUT_PRESET, edgeTypes, nodeTypes, TREE_LAYOUT_PRESET_OPTIONS } from "@/features/genealogyLayout";
 import { deletePersonWithRelations, getPersonDeletionImpact } from "@/features/personDeletion";
 import { emptyPersonForm, type PersonFormValues, personFormPayload, personToForm, validatePersonForm } from "@/features/personForm";
@@ -58,6 +59,8 @@ function relationPersonLabel(personId: string, peopleById: Map<string, Person>) 
 }
 
 export function Home() {
+  const { user } = useAuth();
+  const canEdit = Boolean(user);
   const { nodes: loadedNodes, edges: loadedEdges, people: loadedPeople, relations: loadedRelations } = useLoaderData<GenealogyLoaderData>();
   const [autoLayoutPreset, setAutoLayoutPreset] = useState<TreeLayoutPreset>(DEFAULT_TREE_LAYOUT_PRESET);
   const { graph, people, relations } = useGenealogyRealtime(
@@ -74,8 +77,15 @@ export function Home() {
     setDraft(null);
     setEditingPerson(person);
   }, []);
-  const dataEditMode = interactionMode === "data";
-  const layoutEditMode = interactionMode === "layout";
+  const dataEditMode = canEdit && interactionMode === "data";
+  const layoutEditMode = canEdit && interactionMode === "layout";
+
+  useEffect(() => {
+    if (canEdit || interactionMode === "view") return;
+    setDraft(null);
+    setEditingPerson(null);
+    setInteractionMode("view");
+  }, [canEdit, interactionMode]);
   const rootId = useMemo(() => graph.nodes.find((node) => node.data.root === true)?.id ?? null, [graph.nodes]);
   const automaticDiagramNodes = useMemo(
     () =>
@@ -140,6 +150,7 @@ export function Home() {
   };
 
   const changeInteractionMode = (nextMode: InteractionMode) => {
+    if (nextMode !== "view" && !canEdit) return;
     if (nextMode === interactionMode) return;
     if (interactionMode === "layout" && layout.isDirty) {
       const discard = window.confirm("Masz niezapisane zmiany układu. Odrzucić je i zmienić tryb?");
@@ -419,20 +430,22 @@ export function Home() {
         ) : null}
         <Panel position="bottom-left">
           <ModeControls className="nodrag nopan">
-            <ModeSwitcher aria-label="Tryb pracy">
-              <ModeButton type="button" $active={interactionMode === "view"} onClick={() => changeInteractionMode("view")}>
-                <Eye size={16} aria-hidden="true" />
-                <span>Podgląd</span>
-              </ModeButton>
-              <ModeButton type="button" $active={interactionMode === "data"} onClick={() => changeInteractionMode("data")}>
-                <Pencil size={16} aria-hidden="true" />
-                <span>Dane</span>
-              </ModeButton>
-              <ModeButton type="button" $active={interactionMode === "layout"} onClick={() => changeInteractionMode("layout")}>
-                <Move size={16} aria-hidden="true" />
-                <span>Układ</span>
-              </ModeButton>
-            </ModeSwitcher>
+            {canEdit ? (
+              <ModeSwitcher aria-label="Tryb pracy">
+                <ModeButton type="button" $active={interactionMode === "view"} onClick={() => changeInteractionMode("view")}>
+                  <Eye size={16} aria-hidden="true" />
+                  <span>Podgląd</span>
+                </ModeButton>
+                <ModeButton type="button" $active={interactionMode === "data"} onClick={() => changeInteractionMode("data")}>
+                  <Pencil size={16} aria-hidden="true" />
+                  <span>Dane</span>
+                </ModeButton>
+                <ModeButton type="button" $active={interactionMode === "layout"} onClick={() => changeInteractionMode("layout")}>
+                  <Move size={16} aria-hidden="true" />
+                  <span>Układ</span>
+                </ModeButton>
+              </ModeSwitcher>
+            ) : null}
             <ModeControl>
               <ModeInput type="checkbox" checked={showBirthSurname} onChange={(event) => setShowBirthSurname(event.target.checked)} />
               <ModeTrack aria-hidden="true" />

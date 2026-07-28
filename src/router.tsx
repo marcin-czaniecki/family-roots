@@ -1,14 +1,19 @@
 import { collection, getDocs } from "firebase/firestore";
 import { createBrowserRouter, NavLink, Outlet } from "react-router";
 import styled from "styled-components";
+import { RequireAuth } from "@/components/RequireAuth";
 import { normalizePerson } from "@/entities/person/types";
 import { normalizeRelation } from "@/entities/relation/types";
+import { useAuth } from "@/features/auth/AuthProvider";
 import { buildGenealogyGraph } from "@/features/genealogyLayout";
 import { db } from "./firebase";
 import { Dashboard } from "./views/Dashboard";
 import { Home } from "./views/Home";
+import { Login } from "./views/Login";
 
 function MainLayout() {
+  const { user, loading, signOut } = useAuth();
+
   return (
     <AppShell>
       <TopBar>
@@ -21,7 +26,14 @@ function MainLayout() {
             <NavigationLink to="/" end>
               Drzewo
             </NavigationLink>
-            <NavigationLink to="/dashboard">Dashboard</NavigationLink>
+            {user ? <NavigationLink to="/dashboard">Dashboard</NavigationLink> : null}
+            {loading ? null : user ? (
+              <AuthButton type="button" onClick={() => void signOut()}>
+                Wyloguj
+              </AuthButton>
+            ) : (
+              <NavigationLink to="/login">Zaloguj</NavigationLink>
+            )}
           </Navigation>
         </NavContent>
       </TopBar>
@@ -96,7 +108,7 @@ const Navigation = styled.nav`
   gap: 0.25rem;
 `;
 
-const NavigationLink = styled(NavLink)`
+const navItemStyles = `
   position: relative;
   display: flex;
   align-items: center;
@@ -111,16 +123,6 @@ const NavigationLink = styled(NavLink)`
     color 0.15s ease,
     background 0.15s ease;
 
-  &::after {
-    content: "";
-    position: absolute;
-    right: 1rem;
-    bottom: 0;
-    left: 1rem;
-    height: 3px;
-    background: transparent;
-  }
-
   &:hover {
     background: #eee8de;
     color: #1c2a22;
@@ -129,6 +131,25 @@ const NavigationLink = styled(NavLink)`
   &:focus-visible {
     outline: 2px solid #3d5a4c;
     outline-offset: -4px;
+  }
+
+  @media (max-width: 520px) {
+    min-width: auto;
+    padding: 0 0.7rem;
+  }
+`;
+
+const NavigationLink = styled(NavLink)`
+  ${navItemStyles}
+
+  &::after {
+    content: "";
+    position: absolute;
+    right: 1rem;
+    bottom: 0;
+    left: 1rem;
+    height: 3px;
+    background: transparent;
   }
 
   &.active {
@@ -140,14 +161,19 @@ const NavigationLink = styled(NavLink)`
   }
 
   @media (max-width: 520px) {
-    min-width: auto;
-    padding: 0 0.7rem;
-
     &::after {
       right: 0.7rem;
       left: 0.7rem;
     }
   }
+`;
+
+const AuthButton = styled.button`
+  ${navItemStyles}
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
 `;
 
 const MainContent = styled.main`
@@ -176,18 +202,27 @@ export const router = createBrowserRouter([
         HydrateFallback: () => <p>Loading…</p>,
       },
       {
-        path: "/dashboard",
-        loader: async () => {
-          const [snapshotPeople, snapshotRelations] = await Promise.all([getDocs(collection(db, "people")), getDocs(collection(db, "relations"))]);
-          const relations = snapshotRelations.docs.flatMap((document) => {
-            const relation = normalizeRelation(document.id, document.data() as Record<string, unknown>);
-            return relation ? [relation] : [];
-          });
-          const people = snapshotPeople.docs.map((doc) => normalizePerson(doc.id, doc.data() as Record<string, unknown>));
-          return { relations, people };
-        },
-        HydrateFallback: () => <p>Loading…</p>,
-        Component: Dashboard,
+        path: "/login",
+        Component: Login,
+      },
+      {
+        Component: RequireAuth,
+        children: [
+          {
+            path: "/dashboard",
+            loader: async () => {
+              const [snapshotPeople, snapshotRelations] = await Promise.all([getDocs(collection(db, "people")), getDocs(collection(db, "relations"))]);
+              const relations = snapshotRelations.docs.flatMap((document) => {
+                const relation = normalizeRelation(document.id, document.data() as Record<string, unknown>);
+                return relation ? [relation] : [];
+              });
+              const people = snapshotPeople.docs.map((doc) => normalizePerson(doc.id, doc.data() as Record<string, unknown>));
+              return { relations, people };
+            },
+            HydrateFallback: () => <p>Loading…</p>,
+            Component: Dashboard,
+          },
+        ],
       },
     ],
   },
