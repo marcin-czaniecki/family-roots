@@ -10,7 +10,7 @@ export function FitToTop({ ready }: { ready: boolean }) {
     const frame = requestAnimationFrame(() => {
       const root = getNodes().find((node) => node.data.root === true);
       if (!root) return;
-      const width = root.measured?.width ?? root.width ?? (root.type === "person" ? 360 : 14);
+      const width = root.measured?.width ?? root.width ?? (root.type === "person" ? 360 : 36);
       const height = root.measured?.height ?? root.height ?? (root.type === "person" ? 240 : 14);
       setCenter(root.position.x + width / 2, root.position.y + height / 2, { duration: 0, zoom: 0.82 });
     });

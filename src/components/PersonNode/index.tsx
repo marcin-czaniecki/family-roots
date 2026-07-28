@@ -1,4 +1,4 @@
-import { Handle, Position } from "@xyflow/react";
+import { Handle, Position, useStoreApi } from "@xyflow/react";
 import styled, { css, keyframes } from "styled-components";
 import type { Person } from "@/entities/person/types";
 import { TREE_GROWS_UP } from "@/features/genealogyDirection";
@@ -10,6 +10,12 @@ type PersonNodeData = Person & {
   onEdit?: (person: Person) => void;
   showBirthSurname?: boolean;
   themeColor?: string | null;
+  layoutMode?: boolean;
+  layoutStatus?: "persisted" | "dirty" | "rebased" | null;
+  layoutCollision?: boolean;
+  layoutSelected?: boolean;
+  layoutNodeId?: string;
+  onLayoutPointerDown?: (nodeId: string) => string[];
 };
 
 const fadeIn = keyframes`
@@ -68,6 +74,48 @@ const Card = styled.article<{ $sex: Sex; $growsUp: boolean; $themeColor: string 
   &:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 3px;
+  }
+
+  &[data-layout-mode="true"] {
+    animation: none;
+    cursor: grab;
+    touch-action: none;
+  }
+
+  &[data-layout-mode="true"]:active {
+    cursor: grabbing;
+  }
+
+  &[data-layout-status="persisted"] {
+    box-shadow:
+      0 0 0 3px rgba(61, 90, 76, 0.28),
+      0 1px 0 rgba(28, 42, 34, 0.06);
+  }
+
+  &[data-layout-status="dirty"] {
+    border-color: #b56b24;
+    box-shadow:
+      0 0 0 3px rgba(181, 107, 36, 0.3),
+      0 1px 0 rgba(28, 42, 34, 0.06);
+  }
+
+  &[data-layout-status="rebased"] {
+    border-color: #756294;
+    box-shadow:
+      0 0 0 3px rgba(117, 98, 148, 0.28),
+      0 1px 0 rgba(28, 42, 34, 0.06);
+  }
+
+  &[data-layout-selected="true"] {
+    outline: 3px solid #1c2a22;
+    outline-offset: 5px;
+  }
+
+  &[data-layout-collision="true"] {
+    border-color: #a33b32;
+    box-shadow:
+      0 0 0 5px rgba(163, 59, 50, 0.3),
+      0 1px 0 rgba(28, 42, 34, 0.06);
   }
 `;
 
@@ -238,6 +286,7 @@ function formatLifespan(person: Person): string {
 }
 
 export function PersonNode({ data: person }: { data: PersonNodeData }) {
+  const store = useStoreApi();
   const lifespan = formatLifespan(person);
   const place = person.birthPlace || person.deathPlace;
   const biography = person.biography?.trim();
@@ -254,6 +303,15 @@ export function PersonNode({ data: person }: { data: PersonNodeData }) {
       $themeColor={person.themeColor ?? null}
       tabIndex={biography ? 0 : undefined}
       aria-describedby={biography ? biographyId : undefined}
+      data-layout-mode={person.layoutMode ? "true" : undefined}
+      data-layout-status={person.layoutStatus ?? undefined}
+      data-layout-selected={person.layoutSelected ? "true" : undefined}
+      data-layout-collision={person.layoutCollision ? "true" : undefined}
+      onPointerDownCapture={() => {
+        if (!person.layoutNodeId) return;
+        const nodeIds = person.onLayoutPointerDown?.(person.layoutNodeId) ?? [];
+        if (nodeIds.length > 0) store.getState().addSelectedNodes(nodeIds);
+      }}
     >
       <Handle type="target" position={parentSide} id="parent" style={handleStyle} />
       <Handle type="source" position={childSide} id="child" style={handleStyle} />

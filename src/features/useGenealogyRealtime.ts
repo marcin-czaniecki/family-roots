@@ -2,7 +2,7 @@ import type { Edge, Node } from "@xyflow/react";
 import { collection, onSnapshot, onSnapshotsInSync } from "firebase/firestore";
 import { useEffect, useState } from "react";
 import { normalizePerson, type Person } from "@/entities/person/types";
-import { normalizeRelation, type Relation } from "@/entities/relation/types";
+import { normalizeRelation, type Relation, type TreeLayoutPreset } from "@/entities/relation/types";
 import { db } from "@/firebase";
 import { buildGenealogyGraph } from "./genealogyLayout";
 
@@ -16,7 +16,7 @@ type GenealogyGraph = {
   edges: Edge[];
 };
 
-export function useGenealogyRealtime(initialSource: GenealogySource, initialGraph: GenealogyGraph) {
+export function useGenealogyRealtime(initialSource: GenealogySource, initialGraph: GenealogyGraph, layoutPreset: TreeLayoutPreset) {
   const [source, setSource] = useState<GenealogySource>(() => ({
     people: initialSource.people,
     relations: initialSource.relations.flatMap((relation) => {
@@ -93,7 +93,7 @@ export function useGenealogyRealtime(initialSource: GenealogySource, initialGrap
       return;
     }
 
-    void buildGenealogyGraph(source.relations, peopleById)
+    void buildGenealogyGraph(source.relations, peopleById, layoutPreset)
       .then((nextGraph) => {
         if (active) setGraph(nextGraph);
       })
@@ -104,7 +104,7 @@ export function useGenealogyRealtime(initialSource: GenealogySource, initialGrap
     return () => {
       active = false;
     };
-  }, [source]);
+  }, [layoutPreset, source]);
 
   return {
     graph,

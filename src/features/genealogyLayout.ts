@@ -5,7 +5,7 @@ import { RelationNode } from "@/components/RelationNode";
 import { getPerson } from "@/entities/person/getPerson";
 import type { Person } from "@/entities/person/types";
 import { childrenOf, isParent, isPartner, partnersOf, sideOfKid } from "@/entities/relation/helpers";
-import type { ParentRelation, PartnerRelation, Relation } from "@/entities/relation/types";
+import type { ParentRelation, PartnerRelation, Relation, TreeLayoutPreset } from "@/entities/relation/types";
 import { TREE_GROWS_UP } from "./genealogyDirection";
 
 export const nodeTypes = {
@@ -25,12 +25,35 @@ type PersonResolver = (id: string) => Promise<Person>;
 
 export const PERSON_W = 360;
 export const PERSON_H = 240;
-const RELATION_SIZE = 14;
-const GAP = 64;
+export const RELATION_SIZE = 36;
+export const DEFAULT_TREE_LAYOUT_PRESET: TreeLayoutPreset = "compact";
+export const TREE_LAYOUT_PRESET_OPTIONS: ReadonlyArray<{ value: TreeLayoutPreset; label: string; description: string }> = [
+  { value: "compact", label: "Zwarty", description: "Najmniejsze bezpieczne odstępy między gałęziami." },
+  { value: "balanced", label: "Zrównoważony", description: "Odstępy odpowiadające poprzedniemu układowi." },
+  { value: "spacious", label: "Przestronny", description: "Więcej miejsca dla rozbudowanych linii." },
+];
 const GEN_H = 400;
-const COUPLE_GAP = 40;
-const MULTI_PARTNER_GAP = 96;
 const GEN_STEP = TREE_GROWS_UP ? -GEN_H : GEN_H;
+
+type LayoutRules = {
+  siblingGap: number;
+  coupleGap: number;
+  multiPartnerGap: number;
+};
+
+const LAYOUT_RULES: Record<TreeLayoutPreset, LayoutRules> = {
+  compact: { siblingGap: 24, coupleGap: 28, multiPartnerGap: 48 },
+  balanced: { siblingGap: 64, coupleGap: 40, multiPartnerGap: 96 },
+  spacious: { siblingGap: 96, coupleGap: 56, multiPartnerGap: 144 },
+};
+
+function rulesFor(preset: TreeLayoutPreset): LayoutRules {
+  return LAYOUT_RULES[preset];
+}
+
+function presetForRelation(relation: Relation, inheritedPreset: TreeLayoutPreset): TreeLayoutPreset {
+  return relation.layoutPreset ?? inheritedPreset;
+}
 
 type LayoutMetrics = {
   /** Total width reserved for this person and all attached partners/kids. */
@@ -90,29 +113,32 @@ function sidePartnershipBounds(
   sharedPersonId: string,
   side: "left" | "right",
   innerEdgeX: number,
+  inheritedPreset: TreeLayoutPreset,
 ): { minX: number; maxX: number } {
+  const preset = presetForRelation(partnerRel, inheritedPreset);
+  const rules = rulesFor(preset);
   const otherId = otherPartnerId(partnerRel, sharedPersonId);
   const leftParentId = side === "right" ? sharedPersonId : (otherId ?? sharedPersonId);
   const rightParentId = side === "right" ? otherId : otherId ? sharedPersonId : null;
-  const { leftW, centerW, rightW } = measureKidGroupWidths(relations, partnerRel, leftParentId, rightParentId);
+  const { leftW, centerW, rightW } = measureKidGroupWidths(relations, partnerRel, leftParentId, rightParentId, preset);
   const hasKids = leftW > 0 || centerW > 0 || rightW > 0;
-  const unionX = side === "right" ? innerEdgeX + COUPLE_GAP / 2 : innerEdgeX - COUPLE_GAP / 2;
+  const unionX = side === "right" ? innerEdgeX + rules.coupleGap / 2 : innerEdgeX - rules.coupleGap / 2;
 
   if (side === "right") {
-    const partnerLeft = otherId ? innerEdgeX + COUPLE_GAP : innerEdgeX;
+    const partnerLeft = otherId ? innerEdgeX + rules.coupleGap : innerEdgeX;
     const partnerRight = otherId ? partnerLeft + PERSON_W : innerEdgeX;
     if (!hasKids) return { minX: Math.min(innerEdgeX, partnerLeft), maxX: partnerRight };
-    const starts = kidsGroupStarts(leftW, centerW, rightW, Boolean(otherId), "right");
+    const starts = kidsGroupStarts(leftW, centerW, rightW, Boolean(otherId), rules.coupleGap, rules.siblingGap, "right");
     return {
       minX: Math.min(innerEdgeX, partnerLeft, unionX + starts.minX),
       maxX: Math.max(partnerRight, unionX + starts.maxX),
     };
   }
 
-  const partnerLeft = otherId ? innerEdgeX - COUPLE_GAP - PERSON_W : innerEdgeX;
+  const partnerLeft = otherId ? innerEdgeX - rules.coupleGap - PERSON_W : innerEdgeX;
   const partnerRight = otherId ? partnerLeft + PERSON_W : innerEdgeX;
   if (!hasKids) return { minX: partnerLeft, maxX: Math.max(innerEdgeX, partnerRight) };
-  const starts = kidsGroupStarts(leftW, centerW, rightW, Boolean(rightParentId), "left");
+  const starts = kidsGroupStarts(leftW, centerW, rightW, Boolean(rightParentId), rules.coupleGap, rules.siblingGap, "left");
   return {
     minX: Math.min(partnerLeft, unionX + starts.minX),
     maxX: Math.max(innerEdgeX, partnerRight, unionX + starts.maxX),
@@ -120,8 +146,14 @@ function sidePartnershipBounds(
 }
 
 /** Builds side plans + bounding box for multi-partner layout (person-local, person at 0). */
-function planMultiPartnerLayout(relations: Relation[], personId: string, partnerships: PartnerRelation[]): { sides: SidePlan[]; minX: number; maxX: number } {
+function planMultiPartnerLayout(
+  relations: Relation[],
+  personId: string,
+  partnerships: PartnerRelation[],
+  inheritedPreset: TreeLayoutPreset,
+): { sides: SidePlan[]; minX: number; maxX: number } {
   const sides: SidePlan[] = [];
+  const rules = rulesFor(inheritedPreset);
   let minX = 0;
   let maxX = PERSON_W;
 
@@ -130,10 +162,10 @@ function planMultiPartnerLayout(relations: Relation[], personId: string, partner
   for (let i = 0; i < partnerships.length; i += 2) {
     const partnerRel = partnerships[i];
     if (!partnerRel) continue;
-    const baseBounds = sidePartnershipBounds(relations, partnerRel, personId, "right", 0);
-    const rightInner = hasRightSide ? rightBoundary + MULTI_PARTNER_GAP - baseBounds.minX : PERSON_W;
+    const baseBounds = sidePartnershipBounds(relations, partnerRel, personId, "right", 0, inheritedPreset);
+    const rightInner = hasRightSide ? rightBoundary + rules.multiPartnerGap - baseBounds.minX : PERSON_W;
     sides.push({ partnerRel, side: "right", innerEdgeX: rightInner });
-    const bounds = sidePartnershipBounds(relations, partnerRel, personId, "right", rightInner);
+    const bounds = sidePartnershipBounds(relations, partnerRel, personId, "right", rightInner, inheritedPreset);
     minX = Math.min(minX, bounds.minX);
     maxX = Math.max(maxX, bounds.maxX);
     rightBoundary = Math.max(rightBoundary, bounds.maxX);
@@ -145,10 +177,10 @@ function planMultiPartnerLayout(relations: Relation[], personId: string, partner
   for (let i = 1; i < partnerships.length; i += 2) {
     const partnerRel = partnerships[i];
     if (!partnerRel) continue;
-    const baseBounds = sidePartnershipBounds(relations, partnerRel, personId, "left", 0);
-    const innerEdgeX = hasLeftSide ? leftBoundary - MULTI_PARTNER_GAP - baseBounds.maxX : 0;
+    const baseBounds = sidePartnershipBounds(relations, partnerRel, personId, "left", 0, inheritedPreset);
+    const innerEdgeX = hasLeftSide ? leftBoundary - rules.multiPartnerGap - baseBounds.maxX : 0;
     sides.push({ partnerRel, side: "left", innerEdgeX });
-    const bounds = sidePartnershipBounds(relations, partnerRel, personId, "left", innerEdgeX);
+    const bounds = sidePartnershipBounds(relations, partnerRel, personId, "left", innerEdgeX, inheritedPreset);
     minX = Math.min(minX, bounds.minX);
     maxX = Math.max(maxX, bounds.maxX);
     leftBoundary = Math.min(leftBoundary, bounds.minX);
@@ -167,30 +199,32 @@ function kidsGroupStarts(
   centerW: number,
   rightW: number,
   hasRightParent: boolean,
+  coupleGap: number,
+  siblingGap: number,
   centerBias: KidCenterBias = "center",
 ): { leftStart: number; centerStart: number; rightStart: number; minX: number; maxX: number } {
-  const leftParentLeft = -(COUPLE_GAP / 2 + PERSON_W);
-  const rightParentRight = hasRightParent ? COUPLE_GAP / 2 + PERSON_W : PERSON_W / 2;
+  const leftParentLeft = -(coupleGap / 2 + PERSON_W);
+  const rightParentRight = hasRightParent ? coupleGap / 2 + PERSON_W : PERSON_W / 2;
 
   let centerStart = -centerW / 2;
   let centerEnd = centerW / 2;
 
   if (centerW > 0 && centerBias === "left") {
-    centerEnd = leftParentLeft - GAP;
+    centerEnd = leftParentLeft - siblingGap;
     centerStart = centerEnd - centerW;
   }
 
   if (centerW > 0 && centerBias === "right") {
-    centerStart = rightParentRight + GAP;
+    centerStart = rightParentRight + siblingGap;
     centerEnd = centerStart + centerW;
   }
 
-  let leftEnd = centerW > 0 && centerBias !== "right" ? centerStart - GAP : leftParentLeft - GAP;
-  leftEnd = Math.min(leftEnd, leftParentLeft - GAP);
+  let leftEnd = centerW > 0 && centerBias !== "right" ? centerStart - siblingGap : leftParentLeft - siblingGap;
+  leftEnd = Math.min(leftEnd, leftParentLeft - siblingGap);
   const leftStart = leftW > 0 ? leftEnd - leftW : 0;
 
-  let rightStart = centerW > 0 && centerBias !== "left" ? centerEnd + GAP : rightParentRight + GAP;
-  rightStart = Math.max(rightStart, rightParentRight + GAP);
+  let rightStart = centerW > 0 && centerBias !== "left" ? centerEnd + siblingGap : rightParentRight + siblingGap;
+  rightStart = Math.max(rightStart, rightParentRight + siblingGap);
 
   const minX = Math.min(leftW > 0 ? leftStart : 0, centerW > 0 ? centerStart : 0, leftParentLeft);
   const maxX = Math.max(rightW > 0 ? rightStart + rightW : 0, centerW > 0 ? centerEnd : 0, rightParentRight);
@@ -203,16 +237,20 @@ function measureKidGroupWidths(
   partnerRel: PartnerRelation,
   leftParentId: string,
   rightParentId: string | null,
+  inheritedPreset: TreeLayoutPreset,
 ): { leftW: number; centerW: number; rightW: number } {
+  const preset = presetForRelation(partnerRel, inheritedPreset);
+  const rules = rulesFor(preset);
   const kids = childrenOf(relations, partnerRel);
   const widths = { left: [] as number[], center: [] as number[], right: [] as number[] };
 
   for (const child of kids) {
-    const w = subtreeWidth(relations, child.person.id, partnerRel.id);
-    widths[sideOfKid(child, leftParentId, rightParentId)].push(w);
+    const childPreset = presetForRelation(child, preset);
+    const width = subtreeWidth(relations, child.person.id, partnerRel.id, new Set(), childPreset);
+    widths[sideOfKid(child, leftParentId, rightParentId)].push(width);
   }
 
-  const sum = (list: number[]) => (list.length === 0 ? 0 : list.reduce((a, b) => a + b, 0) + GAP * (list.length - 1));
+  const sum = (list: number[]) => (list.length === 0 ? 0 : list.reduce((total, width) => total + width, 0) + rules.siblingGap * (list.length - 1));
   return { leftW: sum(widths.left), centerW: sum(widths.center), rightW: sum(widths.right) };
 }
 
@@ -221,15 +259,18 @@ function partnershipLayoutMetrics(
   partnerRel: PartnerRelation,
   leftParentId?: string,
   rightParentId?: string | null,
+  inheritedPreset: TreeLayoutPreset = DEFAULT_TREE_LAYOUT_PRESET,
   centerBias: KidCenterBias = "center",
 ): PartnershipLayoutMetrics {
+  const preset = presetForRelation(partnerRel, inheritedPreset);
+  const rules = rulesFor(preset);
   const rightId = rightParentId !== undefined ? rightParentId : (partnerRel.second?.id ?? null);
   const hasPartner = Boolean(rightId);
-  const leftX = hasPartner ? -(COUPLE_GAP / 2 + PERSON_W) : -PERSON_W / 2;
-  const rightX = COUPLE_GAP / 2;
+  const leftX = hasPartner ? -(rules.coupleGap / 2 + PERSON_W) : -PERSON_W / 2;
+  const rightX = rules.coupleGap / 2;
   const ownMinX = leftX;
   const ownMaxX = hasPartner ? rightX + PERSON_W : leftX + PERSON_W;
-  const { leftW, centerW, rightW } = measureKidGroupWidths(relations, partnerRel, leftParentId ?? partnerRel.first.id, rightId);
+  const { leftW, centerW, rightW } = measureKidGroupWidths(relations, partnerRel, leftParentId ?? partnerRel.first.id, rightId, preset);
 
   if (leftW === 0 && centerW === 0 && rightW === 0) {
     return {
@@ -239,7 +280,7 @@ function partnershipLayoutMetrics(
     };
   }
 
-  const starts = kidsGroupStarts(leftW, centerW, rightW, hasPartner, centerBias);
+  const starts = kidsGroupStarts(leftW, centerW, rightW, hasPartner, rules.coupleGap, rules.siblingGap, centerBias);
   const minX = Math.min(ownMinX, starts.minX);
   const maxX = Math.max(ownMaxX, starts.maxX);
 
@@ -251,7 +292,12 @@ function partnershipLayoutMetrics(
 }
 
 /** Layout metrics for a person: 1st partner right, 2nd left, then alternating. */
-function personLayoutMetrics(relations: Relation[], personId: string, fromPartnershipId?: string): LayoutMetrics {
+function personLayoutMetrics(
+  relations: Relation[],
+  personId: string,
+  fromPartnershipId?: string,
+  inheritedPreset: TreeLayoutPreset = DEFAULT_TREE_LAYOUT_PRESET,
+): LayoutMetrics {
   const partnerships = partnersOf(relations, personId, fromPartnershipId);
 
   if (partnerships.length === 0) {
@@ -260,12 +306,11 @@ function personLayoutMetrics(relations: Relation[], personId: string, fromPartne
 
   if (partnerships.length === 1) {
     const partnerRel = partnerships[0]!;
-    // Blood relative is placed on the left of the couple.
-    const metrics = partnershipLayoutMetrics(relations, partnerRel, personId, otherPartnerId(partnerRel, personId));
+    const metrics = partnershipLayoutMetrics(relations, partnerRel, personId, otherPartnerId(partnerRel, personId), inheritedPreset);
     return { width: metrics.width, personOffsetX: metrics.leftPersonOffsetX };
   }
 
-  const { minX, maxX } = planMultiPartnerLayout(relations, personId, partnerships);
+  const { minX, maxX } = planMultiPartnerLayout(relations, personId, partnerships, inheritedPreset);
   return {
     width: maxX - minX,
     personOffsetX: -minX,
@@ -278,20 +323,29 @@ function directChildrenOfPerson(relations: Relation[], personId: string): Parent
   );
 }
 
-function subtreeWidth(relations: Relation[], personId: string, fromPartnershipId?: string, ancestors: ReadonlySet<string> = new Set()): number {
+function subtreeWidth(
+  relations: Relation[],
+  personId: string,
+  fromPartnershipId?: string,
+  ancestors: ReadonlySet<string> = new Set(),
+  inheritedPreset: TreeLayoutPreset = DEFAULT_TREE_LAYOUT_PRESET,
+): number {
   const partnerships = partnersOf(relations, personId, fromPartnershipId);
-  if (partnerships.length > 0) return personLayoutMetrics(relations, personId, fromPartnershipId).width;
+  if (partnerships.length > 0) return personLayoutMetrics(relations, personId, fromPartnershipId, inheritedPreset).width;
   if (ancestors.has(personId)) return PERSON_W;
 
   const children = directChildrenOfPerson(relations, personId);
   if (children.length === 0) return PERSON_W;
 
+  const rules = rulesFor(inheritedPreset);
   const nextAncestors = new Set(ancestors).add(personId);
   const childrenWidth =
-    children.reduce((total, relation) => total + subtreeWidth(relations, relation.person.id, undefined, nextAncestors), 0) + GAP * (children.length - 1);
+    children.reduce((total, relation) => {
+      const childPreset = presetForRelation(relation, inheritedPreset);
+      return total + subtreeWidth(relations, relation.person.id, undefined, nextAncestors, childPreset);
+    }, 0) + rules.siblingGap * (children.length - 1);
   return Math.max(PERSON_W, childrenWidth);
 }
-
 /** Reuses person.id on first placement; later marriages of a spouse may get a duplicate card. */
 function upsertPersonNode(
   nodes: Node[],
@@ -346,6 +400,7 @@ type KidPlacement = {
   child: ReturnType<typeof childrenOf>[number];
   person: Person;
   side: "left" | "center" | "right";
+  preset: TreeLayoutPreset;
   width: number;
 };
 
@@ -364,77 +419,78 @@ async function placeKidsForPartnership(
   placedRelations: Set<string>,
   resolvePerson: PersonResolver,
   branchColor: string | null,
+  inheritedPreset: TreeLayoutPreset,
   centerBias: KidCenterBias = "center",
 ) {
   const kids = childrenOf(relations, partnerRel).filter((child) => !placedRelations.has(child.id));
   if (kids.length === 0) return;
 
-  // Claim parent relations before async recursion so another partnership cannot place the same child again.
   for (const child of kids) placedRelations.add(child.id);
 
+  const preset = presetForRelation(partnerRel, inheritedPreset);
+  const rules = rulesFor(preset);
   const kidsWithPeople: KidPlacement[] = await Promise.all(
-    kids.map(async (child) => ({
-      child,
-      person: await resolvePerson(child.person.id),
-      side: sideOfKid(child, leftParentId, rightParentId),
-      width: subtreeWidth(relations, child.person.id, partnerRel.id),
-    })),
+    kids.map(async (child) => {
+      const childPreset = presetForRelation(child, preset);
+      return {
+        child,
+        person: await resolvePerson(child.person.id),
+        side: sideOfKid(child, leftParentId, rightParentId),
+        preset: childPreset,
+        width: subtreeWidth(relations, child.person.id, partnerRel.id, new Set(), childPreset),
+      };
+    }),
   );
 
-  const byBirth = (a: KidPlacement, b: KidPlacement) => birthRank(a.person) - birthRank(b.person);
-  const leftKids = kidsWithPeople.filter((k) => k.side === "left").sort(byBirth);
-  const centerKids = kidsWithPeople.filter((k) => k.side === "center").sort(byBirth);
-  const rightKids = kidsWithPeople.filter((k) => k.side === "right").sort(byBirth);
+  const byBirth = (first: KidPlacement, second: KidPlacement) => birthRank(first.person) - birthRank(second.person);
+  const leftKids = kidsWithPeople.filter((kid) => kid.side === "left").sort(byBirth);
+  const centerKids = kidsWithPeople.filter((kid) => kid.side === "center").sort(byBirth);
+  const rightKids = kidsWithPeople.filter((kid) => kid.side === "right").sort(byBirth);
 
-  const groupWidth = (group: KidPlacement[]) => (group.length === 0 ? 0 : group.reduce((sum, k) => sum + k.width, 0) + GAP * (group.length - 1));
+  const groupWidth = (group: KidPlacement[]) =>
+    group.length === 0 ? 0 : group.reduce((sum, kid) => sum + kid.width, 0) + rules.siblingGap * (group.length - 1);
 
   const leftW = groupWidth(leftKids);
   const centerW = groupWidth(centerKids);
   const rightW = groupWidth(rightKids);
-
-  const starts = kidsGroupStarts(leftW, centerW, rightW, Boolean(rightParentId), centerBias);
-  const leftStart = centerX + starts.leftStart;
-  const centerStart = centerX + starts.centerStart;
-  const rightStart = centerX + starts.rightStart;
-
+  const starts = kidsGroupStarts(leftW, centerW, rightW, Boolean(rightParentId), rules.coupleGap, rules.siblingGap, centerBias);
   const childY = y + GEN_STEP;
 
   const placeGroup = async (group: KidPlacement[], startX: number) => {
     let cursor = startX;
-    for (const { child, person, side, width: w } of group) {
+    for (const { child, person, side, preset: childPreset, width } of group) {
       const childColor = child.color ?? branchColor;
       const ownPartners = partnersOf(relations, child.person.id, partnerRel.id);
-      let childNodeId: string;
-
-      if (ownPartners.length > 0) {
-        childNodeId = await placePersonWithPartners(
-          relations,
-          person,
-          ownPartners,
-          cursor,
-          childY,
-          nodes,
-          edges,
-          placedPeople,
-          placedRelations,
-          resolvePerson,
-          childColor,
-          partnerRel.id,
-        );
-      } else {
-        childNodeId = await placeSingleParentFamily(
-          relations,
-          person,
-          cursor + w / 2,
-          childY,
-          nodes,
-          edges,
-          placedPeople,
-          placedRelations,
-          resolvePerson,
-          childColor,
-        );
-      }
+      const childNodeId =
+        ownPartners.length > 0
+          ? await placePersonWithPartners(
+              relations,
+              person,
+              ownPartners,
+              cursor,
+              childY,
+              nodes,
+              edges,
+              placedPeople,
+              placedRelations,
+              resolvePerson,
+              childColor,
+              childPreset,
+              partnerRel.id,
+            )
+          : await placeSingleParentFamily(
+              relations,
+              person,
+              cursor + width / 2,
+              childY,
+              nodes,
+              edges,
+              placedPeople,
+              placedRelations,
+              resolvePerson,
+              childColor,
+              childPreset,
+            );
 
       if (side === "center") {
         addDescentEdge(partnerRel.id, childNodeId, "union", edges, childColor);
@@ -442,15 +498,14 @@ async function placeKidsForPartnership(
         const parentNodeId = side === "left" ? leftNodeId : (rightNodeId ?? leftNodeId);
         addDescentEdge(parentNodeId, childNodeId, "direct", edges, childColor);
       }
-      cursor += w + GAP;
+      cursor += width + rules.siblingGap;
     }
   };
 
-  if (leftKids.length) await placeGroup(leftKids, leftStart);
-  if (centerKids.length) await placeGroup(centerKids, centerStart);
-  if (rightKids.length) await placeGroup(rightKids, rightStart);
+  if (leftKids.length) await placeGroup(leftKids, centerX + starts.leftStart);
+  if (centerKids.length) await placeGroup(centerKids, centerX + starts.centerStart);
+  if (rightKids.length) await placeGroup(rightKids, centerX + starts.rightStart);
 }
-
 /**
  * Places one partnership on a given side of an already-placed person.
  * `innerEdgeX` is absolute canvas X of the shared person's edge facing this side.
@@ -469,11 +524,14 @@ async function placeSidePartnership(
   placedRelations: Set<string>,
   resolvePerson: PersonResolver,
   inheritedColor: string | null,
+  inheritedPreset: TreeLayoutPreset,
 ) {
   if (placedRelations.has(partnerRel.id)) return;
   placedRelations.add(partnerRel.id);
 
   const branchColor = partnerRel.color ?? inheritedColor;
+  const preset = presetForRelation(partnerRel, inheritedPreset);
+  const rules = rulesFor(preset);
   const relationY = y + PERSON_H / 2 - RELATION_SIZE / 2;
   const otherId = otherPartnerId(partnerRel, sharedPerson.id);
   const other = otherId ? await resolvePerson(otherId) : null;
@@ -485,15 +543,15 @@ async function placeSidePartnership(
   let centerX: number;
 
   if (side === "right") {
-    const partnerX = innerEdgeX + COUPLE_GAP;
-    const relationX = innerEdgeX + COUPLE_GAP / 2 - RELATION_SIZE / 2;
-    centerX = innerEdgeX + COUPLE_GAP / 2;
+    const partnerX = innerEdgeX + rules.coupleGap;
+    const relationX = innerEdgeX + rules.coupleGap / 2 - RELATION_SIZE / 2;
+    centerX = innerEdgeX + rules.coupleGap / 2;
 
     nodes.push({
       id: partnerRel.id,
       type: "relation",
       position: { x: relationX, y: relationY },
-      data: { color: branchColor },
+      data: { color: branchColor, layoutPreset: preset },
       draggable: true,
     });
 
@@ -510,15 +568,15 @@ async function placeSidePartnership(
       rightParentId = null;
     }
   } else {
-    const partnerX = innerEdgeX - COUPLE_GAP - PERSON_W;
-    const relationX = innerEdgeX - COUPLE_GAP / 2 - RELATION_SIZE / 2;
-    centerX = innerEdgeX - COUPLE_GAP / 2;
+    const partnerX = innerEdgeX - rules.coupleGap - PERSON_W;
+    const relationX = innerEdgeX - rules.coupleGap / 2 - RELATION_SIZE / 2;
+    centerX = innerEdgeX - rules.coupleGap / 2;
 
     nodes.push({
       id: partnerRel.id,
       type: "relation",
       position: { x: relationX, y: relationY },
-      data: { color: branchColor },
+      data: { color: branchColor, layoutPreset: preset },
       draggable: true,
     });
 
@@ -553,10 +611,10 @@ async function placeSidePartnership(
     placedRelations,
     resolvePerson,
     branchColor,
+    preset,
     side,
   );
 }
-
 /**
  * Places a person with all their partnerships: 1st on the right, 2nd on the left, then alternating.
  * The person card is created once and shared across relations.
@@ -573,12 +631,13 @@ async function placePersonWithPartners(
   placedRelations: Set<string>,
   resolvePerson: PersonResolver,
   inheritedColor: string | null = null,
+  inheritedPreset: TreeLayoutPreset = DEFAULT_TREE_LAYOUT_PRESET,
   fromPartnershipId?: string,
 ): Promise<string> {
   if (partnerships.length === 1) {
     const partnerRel = partnerships[0]!;
     const otherId = otherPartnerId(partnerRel, person.id);
-    const metrics = partnershipLayoutMetrics(relations, partnerRel, person.id, otherId);
+    const metrics = partnershipLayoutMetrics(relations, partnerRel, person.id, otherId, inheritedPreset);
     return placePartnership(
       relations,
       partnerRel,
@@ -591,11 +650,12 @@ async function placePersonWithPartners(
       resolvePerson,
       person.id,
       inheritedColor,
+      inheritedPreset,
     );
   }
 
-  const metrics = personLayoutMetrics(relations, person.id, fromPartnershipId);
-  const { sides } = planMultiPartnerLayout(relations, person.id, partnerships);
+  const metrics = personLayoutMetrics(relations, person.id, fromPartnershipId, inheritedPreset);
+  const { sides } = planMultiPartnerLayout(relations, person.id, partnerships, inheritedPreset);
   const personX = slotLeft + metrics.personOffsetX;
   const sharedNodeId = upsertPersonNode(nodes, placedPeople, person, { x: personX, y }, undefined, inheritedColor);
 
@@ -614,12 +674,12 @@ async function placePersonWithPartners(
       placedRelations,
       resolvePerson,
       inheritedColor,
+      inheritedPreset,
     );
   }
 
   return sharedNodeId;
 }
-
 async function placePartnership(
   relations: Relation[],
   partnerRel: PartnerRelation,
@@ -632,11 +692,14 @@ async function placePartnership(
   resolvePerson: PersonResolver,
   bloodRelativeId?: string,
   inheritedColor: string | null = null,
+  inheritedPreset: TreeLayoutPreset = DEFAULT_TREE_LAYOUT_PRESET,
 ): Promise<string> {
   if (placedRelations.has(partnerRel.id)) return bloodRelativeId ?? partnerRel.first.id;
   placedRelations.add(partnerRel.id);
 
   const branchColor = partnerRel.color ?? inheritedColor;
+  const preset = presetForRelation(partnerRel, inheritedPreset);
+  const rules = rulesFor(preset);
   const first = await resolvePerson(partnerRel.first.id);
   const second = partnerRel.second?.id ? await resolvePerson(partnerRel.second.id) : null;
 
@@ -654,8 +717,8 @@ async function placePartnership(
   }
 
   const hasPartner = Boolean(right);
-  const leftX = hasPartner ? centerX - COUPLE_GAP / 2 - PERSON_W : centerX - PERSON_W / 2;
-  const rightX = centerX + COUPLE_GAP / 2;
+  const leftX = hasPartner ? centerX - rules.coupleGap / 2 - PERSON_W : centerX - PERSON_W / 2;
+  const rightX = centerX + rules.coupleGap / 2;
   const relationX = centerX - RELATION_SIZE / 2;
   const relationY = y + PERSON_H / 2 - RELATION_SIZE / 2;
 
@@ -663,7 +726,7 @@ async function placePartnership(
     id: partnerRel.id,
     type: "relation",
     position: { x: relationX, y: relationY },
-    data: { color: branchColor, root: partnerRel.root },
+    data: { color: branchColor, layoutPreset: preset, root: partnerRel.root },
     draggable: true,
   });
 
@@ -691,12 +754,12 @@ async function placePartnership(
     placedRelations,
     resolvePerson,
     branchColor,
+    preset,
   );
 
   if (bloodRelativeId && right?.id === bloodRelativeId && rightNodeId) return rightNodeId;
   return leftNodeId;
 }
-
 async function placeSingleParentFamily(
   relations: Relation[],
   person: Person,
@@ -708,8 +771,10 @@ async function placeSingleParentFamily(
   placedRelations: Set<string>,
   resolvePerson: PersonResolver,
   branchColor: string | null = null,
+  inheritedPreset: TreeLayoutPreset = DEFAULT_TREE_LAYOUT_PRESET,
   root = false,
 ): Promise<string> {
+  const rules = rulesFor(inheritedPreset);
   const parentNodeId = upsertPersonNode(nodes, placedPeople, person, { x: centerX - PERSON_W / 2, y }, undefined, branchColor);
   if (root) {
     const rootNode = nodes.find((node) => node.id === parentNodeId);
@@ -720,15 +785,19 @@ async function placeSingleParentFamily(
   if (childRelations.length === 0) return parentNodeId;
 
   const children = await Promise.all(
-    childRelations.map(async (relation) => ({
-      relation,
-      person: await resolvePerson(relation.person.id),
-      width: subtreeWidth(relations, relation.person.id),
-    })),
+    childRelations.map(async (relation) => {
+      const childPreset = presetForRelation(relation, inheritedPreset);
+      return {
+        relation,
+        person: await resolvePerson(relation.person.id),
+        preset: childPreset,
+        width: subtreeWidth(relations, relation.person.id, undefined, new Set(), childPreset),
+      };
+    }),
   );
   children.sort((first, second) => birthRank(first.person) - birthRank(second.person));
 
-  const childrenWidth = children.reduce((total, child) => total + child.width, 0) + GAP * (children.length - 1);
+  const childrenWidth = children.reduce((total, child) => total + child.width, 0) + rules.siblingGap * (children.length - 1);
   let cursor = centerX - childrenWidth / 2;
   const childY = y + GEN_STEP;
 
@@ -750,6 +819,7 @@ async function placeSingleParentFamily(
             placedRelations,
             resolvePerson,
             childColor,
+            child.preset,
           )
         : await placeSingleParentFamily(
             relations,
@@ -762,10 +832,11 @@ async function placeSingleParentFamily(
             placedRelations,
             resolvePerson,
             childColor,
+            child.preset,
           );
 
     addDescentEdge(parentNodeId, childNodeId, "direct", edges, childColor);
-    cursor += child.width + GAP;
+    cursor += child.width + rules.siblingGap;
   }
 
   return parentNodeId;
@@ -796,7 +867,11 @@ function centerTreeUnderRoot(nodes: Node[], edges: Edge[], rootRelationId: strin
         },
   );
 }
-export async function buildGenealogyGraph(relations: Relation[], peopleById?: ReadonlyMap<string, Person>): Promise<{ nodes: Node[]; edges: Edge[] }> {
+export async function buildGenealogyGraph(
+  relations: Relation[],
+  peopleById?: ReadonlyMap<string, Person>,
+  preset: TreeLayoutPreset = DEFAULT_TREE_LAYOUT_PRESET,
+): Promise<{ nodes: Node[]; edges: Edge[] }> {
   const partnerRoot = relations.find((relation): relation is PartnerRelation => isPartner(relation) && relation.root);
   const directParentRelations = relations.filter(
     (relation): relation is ParentRelation => isParent(relation) && !relation.second?.id && !relation.parentship?.id,
@@ -817,12 +892,25 @@ export async function buildGenealogyGraph(relations: Relation[], peopleById?: Re
   const edges: Edge[] = [];
 
   if (partnerRoot) {
-    await placePartnership(relations, partnerRoot, 0, 0, nodes, edges, new Set(), new Set(), resolvePerson);
+    await placePartnership(relations, partnerRoot, 0, 0, nodes, edges, new Set(), new Set(), resolvePerson, undefined, null, preset);
     return { nodes: centerTreeUnderRoot(nodes, edges, partnerRoot.id), edges };
   }
 
   if (!singleParentRoot) return { nodes, edges };
   const rootPerson = await resolvePerson(singleParentRoot.first.id);
-  await placeSingleParentFamily(relations, rootPerson, 0, 0, nodes, edges, new Set(), new Set(), resolvePerson, null, true);
+  await placeSingleParentFamily(
+    relations,
+    rootPerson,
+    0,
+    0,
+    nodes,
+    edges,
+    new Set(),
+    new Set(),
+    resolvePerson,
+    null,
+    presetForRelation(singleParentRoot, preset),
+    true,
+  );
   return { nodes, edges };
 }

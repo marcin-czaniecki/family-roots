@@ -1,6 +1,7 @@
 import { Background, type Edge, type Node, type OnConnectEnd, Panel, ReactFlow, useReactFlow } from "@xyflow/react";
 import { collection, doc, serverTimestamp, updateDoc, writeBatch } from "firebase/firestore";
-import { useCallback, useMemo, useState } from "react";
+import { AlertTriangle, Eye, Move, Network, Pencil, PinOff, Redo2, RotateCcw, Save, Undo2, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLoaderData } from "react-router";
 import styled from "styled-components";
 import { FitToTop } from "@/components/FitToTop";
@@ -8,12 +9,13 @@ import { PersonFormFields } from "@/components/PersonFormFields";
 import { PersonSearchSelect } from "@/components/PersonSearchSelect";
 import { matchesPersonQuery, personDatesOrId, personName } from "@/entities/person/label";
 import type { Person } from "@/entities/person/types";
-import type { ParentRelation, PartnerRelation, Relation } from "@/entities/relation/types";
-import { edgeTypes, nodeTypes } from "@/features/genealogyLayout";
+import type { ParentRelation, PartnerRelation, Relation, TreeLayoutPreset } from "@/entities/relation/types";
+import { DEFAULT_TREE_LAYOUT_PRESET, edgeTypes, nodeTypes, TREE_LAYOUT_PRESET_OPTIONS } from "@/features/genealogyLayout";
 import { deletePersonWithRelations, getPersonDeletionImpact } from "@/features/personDeletion";
 import { emptyPersonForm, type PersonFormValues, personFormPayload, personToForm, validatePersonForm } from "@/features/personForm";
 import { deleteRelationWithDependents, getRelationDeletionImpact } from "@/features/relationDeletion";
 import { useGenealogyRealtime } from "@/features/useGenealogyRealtime";
+import { useTreeLayoutEditor } from "@/features/useTreeLayoutEditor";
 import { db } from "@/firebase";
 
 import "@xyflow/react/dist/style.css";
@@ -27,6 +29,7 @@ type GenealogyLoaderData = {
 
 const SEARCH_PAGE_SIZE = 6;
 const DEFAULT_RELATION_COLOR = "#3d5a4c";
+type InteractionMode = "view" | "data" | "layout";
 
 type RelationTarget = ({ mode: "existing"; personId: string } | { mode: "new"; person: PersonFormValues }) & { color: string | null };
 
@@ -56,8 +59,13 @@ function relationPersonLabel(personId: string, peopleById: Map<string, Person>) 
 
 export function Home() {
   const { nodes: loadedNodes, edges: loadedEdges, people: loadedPeople, relations: loadedRelations } = useLoaderData<GenealogyLoaderData>();
-  const { graph, people, relations } = useGenealogyRealtime({ people: loadedPeople, relations: loadedRelations }, { nodes: loadedNodes, edges: loadedEdges });
-  const [editMode, setEditMode] = useState(false);
+  const [autoLayoutPreset, setAutoLayoutPreset] = useState<TreeLayoutPreset>(DEFAULT_TREE_LAYOUT_PRESET);
+  const { graph, people, relations } = useGenealogyRealtime(
+    { people: loadedPeople, relations: loadedRelations },
+    { nodes: loadedNodes, edges: loadedEdges },
+    autoLayoutPreset,
+  );
+  const [interactionMode, setInteractionMode] = useState<InteractionMode>("view");
   const [showBirthSurname, setShowBirthSurname] = useState(false);
   const [draft, setDraft] = useState<RelationDraft | null>(null);
   const [editingPerson, setEditingPerson] = useState<Person | null>(null);
@@ -66,22 +74,88 @@ export function Home() {
     setDraft(null);
     setEditingPerson(person);
   }, []);
-  const diagramNodes = useMemo(
+  const dataEditMode = interactionMode === "data";
+  const layoutEditMode = interactionMode === "layout";
+  const rootId = useMemo(() => graph.nodes.find((node) => node.data.root === true)?.id ?? null, [graph.nodes]);
+  const automaticDiagramNodes = useMemo(
     () =>
       graph.nodes.map((node) =>
         node.type === "person"
           ? {
               ...node,
-              data: { ...node.data, editMode, onEdit: openPersonEditor, showBirthSurname },
+              data: { ...node.data, editMode: dataEditMode, onEdit: openPersonEditor, showBirthSurname },
             }
           : node,
       ),
-    [editMode, graph.nodes, openPersonEditor, showBirthSurname],
+    [dataEditMode, graph.nodes, openPersonEditor, showBirthSurname],
   );
+  const layout = useTreeLayoutEditor(automaticDiagramNodes, graph.edges, rootId, layoutEditMode);
+  const diagramNodes = layout.nodes;
+  const [layoutRelationId, setLayoutRelationId] = useState(() => loadedRelations.find((relation) => relation.root)?.id ?? loadedRelations[0]?.id ?? "");
+  const [savingRelationPreset, setSavingRelationPreset] = useState(false);
+  const [relationPresetError, setRelationPresetError] = useState<string | null>(null);
+  const layoutRelationOptions = useMemo(
+    () =>
+      relations
+        .map((relation) => {
+          const label =
+            relation.type === "partner"
+              ? `${relationPersonLabel(relation.first.id, peopleById)} + ${relation.second?.id ? relationPersonLabel(relation.second.id, peopleById) : "nieznany partner"}`
+              : `${[relation.first.id, relation.second?.id]
+                  .filter((personId): personId is string => Boolean(personId))
+                  .map((personId) => relationPersonLabel(personId, peopleById))
+                  .join(" + ")} → ${relationPersonLabel(relation.person.id, peopleById)}`;
+          return { id: relation.id, label, root: relation.root, type: relation.type };
+        })
+        .sort((first, second) => Number(second.root) - Number(first.root) || first.label.localeCompare(second.label, "pl")),
+    [peopleById, relations],
+  );
+  const selectedLayoutRelation = relations.find((relation) => relation.id === layoutRelationId) ?? null;
+
+  useEffect(() => {
+    const clickedRelation = relations.find((relation) => relation.id === layout.selectedNodeId);
+    if (clickedRelation) {
+      setLayoutRelationId(clickedRelation.id);
+      return;
+    }
+    setLayoutRelationId((current) =>
+      relations.some((relation) => relation.id === current) ? current : (relations.find((relation) => relation.root)?.id ?? relations[0]?.id ?? ""),
+    );
+  }, [layout.selectedNodeId, relations]);
+
+  const updateRelationLayoutPreset = async (value: TreeLayoutPreset | "inherit") => {
+    if (!selectedLayoutRelation || savingRelationPreset) return;
+    setSavingRelationPreset(true);
+    setRelationPresetError(null);
+    try {
+      await updateDoc(doc(db, "relations", selectedLayoutRelation.id), {
+        layoutPreset: value === "inherit" ? null : value,
+        updatedAt: serverTimestamp(),
+      });
+    } catch (error) {
+      setRelationPresetError(error instanceof Error ? error.message : "Nie udało się zapisać układu relacji.");
+    } finally {
+      setSavingRelationPreset(false);
+    }
+  };
+
+  const changeInteractionMode = (nextMode: InteractionMode) => {
+    if (nextMode === interactionMode) return;
+    if (interactionMode === "layout" && layout.isDirty) {
+      const discard = window.confirm("Masz niezapisane zmiany układu. Odrzucić je i zmienić tryb?");
+      if (!discard) return;
+      layout.discard();
+    }
+    if (nextMode !== "data") {
+      setDraft(null);
+      setEditingPerson(null);
+    }
+    setInteractionMode(nextMode);
+  };
 
   const onConnectEnd: OnConnectEnd = useCallback(
     (_event, connectionState) => {
-      if (!editMode || !connectionState.fromNode || !connectionState.fromHandle || connectionState.fromHandle.type !== "source") return;
+      if (!dataEditMode || !connectionState.fromNode || !connectionState.fromHandle || connectionState.fromHandle.type !== "source") return;
 
       const sourceNode = connectionState.fromNode;
       const handleId = connectionState.fromHandle.id;
@@ -134,7 +208,7 @@ export function Home() {
         });
       }
     },
-    [editMode, peopleById, relations],
+    [dataEditMode, peopleById, relations],
   );
 
   const saveRelation = async (activeDraft: RelationDraft, target: RelationTarget) => {
@@ -194,7 +268,21 @@ export function Home() {
     });
     setEditingPerson(null);
   };
-  const saveParentRelation = async (relation: ParentRelation, secondParentId: string, color: string | null) => {
+  const updateRelationWithRoot = async (relation: Relation, root: boolean, values: Record<string, unknown>) => {
+    if (relation.root && !root) {
+      throw new Error("Nie można usunąć jedynego punktu startowego. Ustaw inną relację jako root, aby go przenieść.");
+    }
+
+    const batch = writeBatch(db);
+    if (root) {
+      for (const currentRoot of relations.filter((candidate) => candidate.root && candidate.id !== relation.id)) {
+        batch.update(doc(db, "relations", currentRoot.id), { root: false });
+      }
+    }
+    batch.update(doc(db, "relations", relation.id), { ...values, root });
+    await batch.commit();
+  };
+  const saveParentRelation = async (relation: ParentRelation, secondParentId: string, color: string | null, root: boolean) => {
     const parentship = secondParentId
       ? relations
           .filter(
@@ -206,14 +294,18 @@ export function Home() {
           .sort((first, second) => first.id.localeCompare(second.id))[0]
       : null;
 
-    await updateDoc(doc(db, "relations", relation.id), {
+    if (root && secondParentId) {
+      throw new Error("Relacja parent może być rootem tylko wtedy, gdy ma jednego znanego rodzica i nie ma parentship.");
+    }
+
+    await updateRelationWithRoot(relation, root, {
       color,
       second: secondParentId ? doc(db, "people", secondParentId) : null,
       parentship: parentship ? doc(db, "relations", parentship.id) : null,
     });
   };
-  const savePartnerRelation = async (relation: PartnerRelation, color: string | null) => {
-    await updateDoc(doc(db, "relations", relation.id), { color });
+  const savePartnerRelation = async (relation: PartnerRelation, color: string | null, root: boolean) => {
+    await updateRelationWithRoot(relation, root, { color });
   };
   const deleteRelation = async (relation: Relation) => {
     await deleteRelationWithDependents(relation, relations);
@@ -235,14 +327,23 @@ export function Home() {
   return (
     <Canvas>
       <ReactFlow
-        className={editMode ? "genealogy-flow is-editing" : "genealogy-flow"}
+        className={`genealogy-flow${dataEditMode ? " is-editing" : ""}${layoutEditMode ? " is-layout-editing" : ""}`}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
-        nodes={diagramNodes}
+        defaultNodes={diagramNodes}
         edges={graph.edges}
-        nodesConnectable={editMode}
+        nodesDraggable={layoutEditMode}
+        nodesConnectable={dataEditMode}
+        elementsSelectable={layoutEditMode}
+        snapToGrid={layoutEditMode}
+        snapGrid={[16, 16]}
         connectOnClick={false}
         onConnectEnd={onConnectEnd}
+        onInit={layout.onInit}
+        onNodeClick={layout.onNodeClick}
+        onNodeDragStart={layout.onNodeDragStart}
+        onNodeDrag={layout.onNodeDrag}
+        onNodeDragStop={layout.onNodeDragStop}
         colorMode="light"
         connectionLineStyle={{ stroke: "#3d5a4c", strokeWidth: 2 }}
         defaultEdgeOptions={{ zIndex: 2, style: { stroke: "#8a735a", strokeWidth: 1.6 } }}
@@ -251,32 +352,152 @@ export function Home() {
         maxZoom={1.6}
         style={{ ["--xy-edge-stroke" as string]: "#8a735a" }}
       >
-        <FitToTop ready={graph.nodes.length > 0} />
+        <FitToTop key={autoLayoutPreset} ready={graph.nodes.length > 0 && layout.placementsReady} />
         <Background color="#d5cbb8" gap={28} size={1} />
         <DiagramPersonSearch nodes={graph.nodes} />
+        {layoutEditMode ? (
+          <Panel position="top-right">
+            <AutomaticLayoutPanel className="nodrag nopan nowheel">
+              <AutomaticLayoutHeader>
+                <Network size={18} aria-hidden="true" />
+                <span>Automatyczny układ</span>
+              </AutomaticLayoutHeader>
+              <AutomaticLayoutField>
+                <AutomaticLayoutLabel htmlFor="tree-layout-preset">Całe drzewo</AutomaticLayoutLabel>
+                <AutomaticLayoutSelect
+                  id="tree-layout-preset"
+                  value={autoLayoutPreset}
+                  onChange={(event) => setAutoLayoutPreset(event.target.value as TreeLayoutPreset)}
+                >
+                  {TREE_LAYOUT_PRESET_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </AutomaticLayoutSelect>
+              </AutomaticLayoutField>
+              <AutomaticLayoutDivider />
+              <AutomaticLayoutField>
+                <AutomaticLayoutLabel htmlFor="relation-layout-target">Relacja</AutomaticLayoutLabel>
+                <AutomaticLayoutSelect
+                  id="relation-layout-target"
+                  value={layoutRelationId}
+                  onChange={(event) => {
+                    setLayoutRelationId(event.target.value);
+                    setRelationPresetError(null);
+                  }}
+                  disabled={layoutRelationOptions.length === 0}
+                >
+                  {layoutRelationOptions.map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.root ? "[root] " : ""}
+                      {option.label}
+                    </option>
+                  ))}
+                </AutomaticLayoutSelect>
+              </AutomaticLayoutField>
+              <AutomaticLayoutField>
+                <AutomaticLayoutLabel htmlFor="relation-layout-preset">Układ gałęzi</AutomaticLayoutLabel>
+                <AutomaticLayoutSelect
+                  id="relation-layout-preset"
+                  value={selectedLayoutRelation?.layoutPreset ?? "inherit"}
+                  disabled={!selectedLayoutRelation || savingRelationPreset}
+                  onChange={(event) => void updateRelationLayoutPreset(event.target.value as TreeLayoutPreset | "inherit")}
+                >
+                  <option value="inherit">Dziedzicz z drzewa</option>
+                  {TREE_LAYOUT_PRESET_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </AutomaticLayoutSelect>
+              </AutomaticLayoutField>
+              {savingRelationPreset ? <AutomaticLayoutStatus>Zapisywanie…</AutomaticLayoutStatus> : null}
+              {relationPresetError ? <AutomaticLayoutError>{relationPresetError}</AutomaticLayoutError> : null}
+            </AutomaticLayoutPanel>
+          </Panel>
+        ) : null}
         <Panel position="bottom-left">
           <ModeControls className="nodrag nopan">
-            <ModeControl>
-              <ModeInput
-                type="checkbox"
-                checked={editMode}
-                onChange={(event) => {
-                  const enabled = event.target.checked;
-                  setEditMode(enabled);
-                  if (!enabled) {
-                    setDraft(null);
-                    setEditingPerson(null);
-                  }
-                }}
-              />
-              <ModeTrack aria-hidden="true" />
-              <ModeLabel>Tryb edycji</ModeLabel>
-            </ModeControl>
+            <ModeSwitcher aria-label="Tryb pracy">
+              <ModeButton type="button" $active={interactionMode === "view"} onClick={() => changeInteractionMode("view")}>
+                <Eye size={16} aria-hidden="true" />
+                <span>Podgląd</span>
+              </ModeButton>
+              <ModeButton type="button" $active={interactionMode === "data"} onClick={() => changeInteractionMode("data")}>
+                <Pencil size={16} aria-hidden="true" />
+                <span>Dane</span>
+              </ModeButton>
+              <ModeButton type="button" $active={interactionMode === "layout"} onClick={() => changeInteractionMode("layout")}>
+                <Move size={16} aria-hidden="true" />
+                <span>Układ</span>
+              </ModeButton>
+            </ModeSwitcher>
             <ModeControl>
               <ModeInput type="checkbox" checked={showBirthSurname} onChange={(event) => setShowBirthSurname(event.target.checked)} />
               <ModeTrack aria-hidden="true" />
               <ModeLabel>Nazwisko rodowe</ModeLabel>
             </ModeControl>
+            {layoutEditMode ? (
+              <LayoutTools>
+                <LayoutSummary $error={layout.collisionCount > 0}>
+                  {layout.collisionCount > 0 ? <AlertTriangle size={15} aria-hidden="true" /> : null}
+                  <span>
+                    {layout.collisionCount > 0
+                      ? `Kolizje: ${layout.collisionCount}`
+                      : layout.isDirty
+                        ? `Zmiany: ${layout.dirtyCount}`
+                        : `Ustawione: ${layout.persistedCount}`}
+                  </span>
+                </LayoutSummary>
+                <LayoutActions>
+                  <LayoutAction
+                    type="button"
+                    $primary
+                    onClick={() => void layout.save()}
+                    disabled={!layout.isDirty || layout.saving || layout.collisionCount > 0}
+                    title="Zapisz układ"
+                  >
+                    <Save size={17} aria-hidden="true" />
+                    <span>{layout.saving ? "Zapisywanie" : "Zapisz"}</span>
+                  </LayoutAction>
+                  <LayoutIconAction type="button" onClick={layout.undo} disabled={!layout.canUndo} title="Cofnij zmianę" aria-label="Cofnij zmianę">
+                    <Undo2 size={18} aria-hidden="true" />
+                  </LayoutIconAction>
+                  <LayoutIconAction type="button" onClick={layout.redo} disabled={!layout.canRedo} title="Ponów zmianę" aria-label="Ponów zmianę">
+                    <Redo2 size={18} aria-hidden="true" />
+                  </LayoutIconAction>
+                  <LayoutIconAction
+                    type="button"
+                    onClick={layout.resetSelected}
+                    disabled={!layout.selectedNodeId}
+                    title="Przywróć automatyczne położenie zaznaczenia"
+                    aria-label="Przywróć automatyczne położenie zaznaczenia"
+                  >
+                    <PinOff size={18} aria-hidden="true" />
+                  </LayoutIconAction>
+                  <LayoutIconAction
+                    type="button"
+                    onClick={layout.resetAll}
+                    disabled={!layout.isDirty && layout.persistedCount === 0}
+                    title="Przywróć cały układ automatyczny"
+                    aria-label="Przywróć cały układ automatyczny"
+                  >
+                    <RotateCcw size={18} aria-hidden="true" />
+                  </LayoutIconAction>
+                  <LayoutIconAction
+                    type="button"
+                    onClick={layout.discard}
+                    disabled={!layout.isDirty}
+                    title="Odrzuć niezapisane zmiany"
+                    aria-label="Odrzuć niezapisane zmiany"
+                  >
+                    <X size={18} aria-hidden="true" />
+                  </LayoutIconAction>
+                </LayoutActions>
+                {layout.error ? <LayoutError>{layout.error}</LayoutError> : null}
+              </LayoutTools>
+            ) : null}
           </ModeControls>
         </Panel>
         <style>{`
@@ -466,8 +687,8 @@ function EditPersonEditor({
   onCancel: () => void;
   onSave: (values: PersonFormValues) => Promise<void>;
   onDelete: () => Promise<void>;
-  onSaveParentRelation: (relation: ParentRelation, secondParentId: string, color: string | null) => Promise<void>;
-  onSavePartnerRelation: (relation: PartnerRelation, color: string | null) => Promise<void>;
+  onSaveParentRelation: (relation: ParentRelation, secondParentId: string, color: string | null, root: boolean) => Promise<void>;
+  onSavePartnerRelation: (relation: PartnerRelation, color: string | null, root: boolean) => Promise<void>;
   onDeleteRelation: (relation: Relation) => Promise<void>;
 }) {
   const [activeTab, setActiveTab] = useState<"details" | "relations">("details");
@@ -645,8 +866,8 @@ function EditPersonEditor({
               people={people}
               relations={relations}
               onCancel={() => setEditingRelationId(null)}
-              onSave={async (secondParentId, color) => {
-                await onSaveParentRelation(editingRelation, secondParentId, color);
+              onSave={async (secondParentId, color, root) => {
+                await onSaveParentRelation(editingRelation, secondParentId, color, root);
                 setEditingRelationId(null);
               }}
             />
@@ -655,8 +876,8 @@ function EditPersonEditor({
               relation={editingRelation}
               people={people}
               onCancel={() => setEditingRelationId(null)}
-              onSave={async (color) => {
-                await onSavePartnerRelation(editingRelation, color);
+              onSave={async (color, root) => {
+                await onSavePartnerRelation(editingRelation, color, root);
                 setEditingRelationId(null);
               }}
             />
@@ -731,10 +952,11 @@ function ParentRelationEditor({
   people: Person[];
   relations: Relation[];
   onCancel: () => void;
-  onSave: (secondParentId: string, color: string | null) => Promise<void>;
+  onSave: (secondParentId: string, color: string | null, root: boolean) => Promise<void>;
 }) {
   const [secondParentId, setSecondParentId] = useState(relation.second?.id ?? "");
   const [color, setColor] = useState(relation.color ?? "");
+  const [root, setRoot] = useState(relation.root);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const peopleById = useMemo(() => new Map(people.map((person) => [person.id, person])), [people]);
@@ -760,6 +982,8 @@ function ParentRelationEditor({
     const person = peopleById.get(personId);
     return person ? personName(person) : personId;
   };
+  const rootAvailable = !secondParentId;
+  const effectiveRoot = rootAvailable ? root : false;
   const parentshipPeople = matchedParentship
     ? [matchedParentship.first.id, matchedParentship.second?.id]
         .filter((personId): personId is string => Boolean(personId))
@@ -770,7 +994,7 @@ function ParentRelationEditor({
     setSaving(true);
     setError(null);
     try {
-      await onSave(secondParentId, color || null);
+      await onSave(secondParentId, color || null, effectiveRoot);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Nie udało się zaktualizować relacji.");
       setSaving(false);
@@ -815,6 +1039,15 @@ function ParentRelationEditor({
 
       <RelationColorField id={`parent-relation-color-${relation.id}`} value={color} onChange={setColor} disabled={saving} />
 
+      <RelationRootField
+        id={`parent-relation-root-${relation.id}`}
+        checked={effectiveRoot}
+        currentRoot={relation.root}
+        available={rootAvailable}
+        disabled={saving}
+        onChange={setRoot}
+      />
+
       <ParentshipMatch $matched={Boolean(matchedParentship)} $empty={!secondParentId}>
         <strong>Parentship</strong>
         <span>
@@ -848,9 +1081,10 @@ function PartnerRelationEditor({
   relation: PartnerRelation;
   people: Person[];
   onCancel: () => void;
-  onSave: (color: string | null) => Promise<void>;
+  onSave: (color: string | null, root: boolean) => Promise<void>;
 }) {
   const [color, setColor] = useState(relation.color ?? "");
+  const [root, setRoot] = useState(relation.root);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const peopleById = useMemo(() => new Map(people.map((person) => [person.id, person])), [people]);
@@ -864,7 +1098,7 @@ function PartnerRelationEditor({
     setSaving(true);
     setError(null);
     try {
-      await onSave(color || null);
+      await onSave(color || null, root);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Nie udało się zaktualizować relacji.");
       setSaving(false);
@@ -896,6 +1130,15 @@ function PartnerRelationEditor({
 
       <RelationColorField id={`partner-relation-color-${relation.id}`} value={color} onChange={setColor} disabled={saving} />
 
+      <RelationRootField
+        id={`partner-relation-root-${relation.id}`}
+        checked={root}
+        currentRoot={relation.root}
+        available
+        disabled={saving}
+        onChange={setRoot}
+      />
+
       {error ? <EditorError>{error}</EditorError> : null}
       <EditorActions>
         <SaveButton type="button" disabled={saving} onClick={() => void handleSave()}>
@@ -906,6 +1149,45 @@ function PartnerRelationEditor({
         </CancelButton>
       </EditorActions>
     </ParentRelationEditPanel>
+  );
+}
+
+function RelationRootField({
+  id,
+  checked,
+  currentRoot,
+  available,
+  disabled,
+  onChange,
+}: {
+  id: string;
+  checked: boolean;
+  currentRoot: boolean;
+  available: boolean;
+  disabled: boolean;
+  onChange: (root: boolean) => void;
+}) {
+  const locked = currentRoot && checked;
+  const hint = !available
+    ? "Relacja parent z drugim rodzicem lub parentship nie może być punktem startowym."
+    : locked
+      ? "To jest obecny root. Aby go przenieść, ustaw root na innej relacji."
+      : checked
+        ? "Po zapisie ta relacja zostanie rootem, a poprzedni root zostanie wyłączony."
+        : "Root określa punkt startowy wyświetlania drzewa.";
+
+  return (
+    <EditorField>
+      <EditorLabel>Root drzewa</EditorLabel>
+      <RelationRootControl>
+        <RelationRootToggle htmlFor={id}>
+          <input id={id} type="checkbox" checked={checked} disabled={disabled || !available || locked} onChange={(event) => onChange(event.target.checked)} />
+          Punkt startowy drzewa
+        </RelationRootToggle>
+        {checked ? <RelationRootStatus>root</RelationRootStatus> : null}
+      </RelationRootControl>
+      <RelationColorHint>{hint}</RelationColorHint>
+    </EditorField>
   );
 }
 
@@ -1240,6 +1522,82 @@ const ModeTrack = styled.span`
   }
 `;
 
+const AutomaticLayoutPanel = styled.section`
+  box-sizing: border-box;
+  width: min(20rem, calc(100vw - 2rem));
+  max-height: calc(100vh - 7rem);
+  overflow: auto;
+  border: 1px solid #b9aa94;
+  background: #f7f4ef;
+  padding: 0.85rem;
+  box-shadow: 0 4px 16px rgba(28, 42, 34, 0.14);
+`;
+
+const AutomaticLayoutHeader = styled.h2`
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 0.85rem;
+  color: #1c2a22;
+  font-size: 0.95rem;
+  line-height: 1.2;
+  font-weight: 700;
+`;
+
+const AutomaticLayoutField = styled.div`
+  display: grid;
+  gap: 0.35rem;
+  margin-top: 0.65rem;
+`;
+
+const AutomaticLayoutLabel = styled.label`
+  color: #5c6b62;
+  font-size: 0.74rem;
+  line-height: 1.2;
+  font-weight: 700;
+`;
+
+const AutomaticLayoutSelect = styled.select`
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 2.5rem;
+  border: 1px solid #c5b8a4;
+  border-radius: 4px;
+  background: #fff;
+  color: #1c2a22;
+  padding: 0.5rem 2rem 0.5rem 0.6rem;
+  font: inherit;
+  font-size: 0.8rem;
+
+  &:focus-visible {
+    border-color: #3d5a4c;
+    outline: 2px solid rgba(61, 90, 76, 0.2);
+    outline-offset: 1px;
+  }
+
+  &:disabled {
+    background: #ece7df;
+    color: #7c837e;
+    cursor: default;
+  }
+`;
+
+const AutomaticLayoutDivider = styled.div`
+  height: 1px;
+  margin: 0.9rem 0 0.15rem;
+  background: #d8d0c3;
+`;
+
+const AutomaticLayoutStatus = styled.p`
+  margin: 0.65rem 0 0;
+  color: #5c6b62;
+  font-size: 0.74rem;
+`;
+
+const AutomaticLayoutError = styled(AutomaticLayoutStatus)`
+  color: #a33b32;
+  line-height: 1.35;
+`;
 const ModeControls = styled.div`
   display: flex;
   flex-direction: column;
@@ -1278,6 +1636,117 @@ const ModeLabel = styled.span`
   color: var(--ink);
   font-size: 0.82rem;
   font-weight: 500;
+`;
+
+const ModeSwitcher = styled.div`
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  width: min(22rem, calc(100vw - 2rem));
+  border: 1px solid #c5b8a4;
+  background: #f7f4ef;
+  box-shadow: 0 3px 12px rgba(28, 42, 34, 0.12);
+`;
+
+const ModeButton = styled.button<{ $active: boolean }>`
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  min-width: 0;
+  min-height: 2.65rem;
+  border: none;
+  border-right: 1px solid #d8d0c3;
+  background: ${({ $active }) => ($active ? "#3d5a4c" : "#f7f4ef")};
+  color: ${({ $active }) => ($active ? "#fff" : "#1c2a22")};
+  padding: 0.55rem 0.65rem;
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 650;
+  cursor: pointer;
+
+  &:last-child {
+    border-right: none;
+  }
+
+  &:hover:not(:disabled),
+  &:focus-visible {
+    background: ${({ $active }) => ($active ? "#334d41" : "#e8efe9")};
+    outline: none;
+  }
+`;
+
+const LayoutTools = styled.div`
+  box-sizing: border-box;
+  width: min(22rem, calc(100vw - 2rem));
+  border: 1px solid #c5b8a4;
+  background: #f7f4ef;
+  padding: 0.65rem;
+  box-shadow: 0 3px 12px rgba(28, 42, 34, 0.12);
+`;
+
+const LayoutSummary = styled.div<{ $error: boolean }>`
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-height: 1.25rem;
+  margin-bottom: 0.55rem;
+  color: ${({ $error }) => ($error ? "#a33b32" : "#5c6b62")};
+  font-size: 0.78rem;
+  font-weight: 650;
+`;
+
+const LayoutActions = styled.div`
+  display: grid;
+  grid-template-columns: minmax(6rem, 1fr) repeat(5, 2.55rem);
+  gap: 0.35rem;
+
+  @media (max-width: 430px) {
+    grid-template-columns: minmax(5.5rem, 1fr) repeat(5, 2.35rem);
+  }
+`;
+
+const LayoutAction = styled.button<{ $primary?: boolean }>`
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  min-width: 0;
+  height: 2.55rem;
+  border: 1px solid ${({ $primary }) => ($primary ? "#3d5a4c" : "#c5b8a4")};
+  background: ${({ $primary }) => ($primary ? "#3d5a4c" : "#fff")};
+  color: ${({ $primary }) => ($primary ? "#fff" : "#1c2a22")};
+  padding: 0 0.6rem;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 650;
+  cursor: pointer;
+
+  &:hover:not(:disabled),
+  &:focus-visible {
+    border-color: #3d5a4c;
+    outline: none;
+  }
+
+  &:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+`;
+
+const LayoutIconAction = styled(LayoutAction)`
+  width: 2.55rem;
+  padding: 0;
+
+  @media (max-width: 430px) {
+    width: 2.35rem;
+  }
+`;
+
+const LayoutError = styled.p`
+  margin: 0.55rem 0 0;
+  color: #a33b32;
+  font-size: 0.75rem;
+  line-height: 1.35;
 `;
 
 const EditorDrawer = styled.form`
@@ -1679,6 +2148,41 @@ const EditorField = styled.div<{ $span?: boolean }>`
 const EditorLabel = styled.label`
   color: var(--muted);
   font-size: 0.75rem;
+`;
+
+const RelationRootControl = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  min-height: 2.5rem;
+  border: 1px solid var(--line);
+  background: #fff;
+  padding: 0.45rem 0.6rem;
+`;
+
+const RelationRootToggle = styled.label`
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  color: var(--ink);
+  font-size: 0.78rem;
+  line-height: 1.3;
+
+  input {
+    width: 1rem;
+    height: 1rem;
+    flex: 0 0 auto;
+    accent-color: var(--accent);
+  }
+`;
+
+const RelationRootStatus = styled.strong`
+  border-left: 2px solid #8b3a2a;
+  color: #8b3a2a;
+  padding-left: 0.45rem;
+  font-size: 0.7rem;
+  text-transform: uppercase;
 `;
 
 const RelationColorControl = styled.div`

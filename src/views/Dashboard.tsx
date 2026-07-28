@@ -38,6 +38,11 @@ const emptyRelationForm = (): RelationFormValues => ({
 function refId(value: { id?: string } | null | undefined) {
   return value?.id ?? null;
 }
+
+function relationCanBeRoot(relation: Pick<Relation, "type"> & { second?: { id?: string } | null; parentship?: { id?: string } | null }) {
+  if (relation.type === "partner") return true;
+  return !relation.second?.id && !relation.parentship?.id;
+}
 function polishCount(count: number, one: string, few: string, many: string) {
   if (count === 1) return one;
   const lastTwoDigits = count % 100;
@@ -139,6 +144,10 @@ export function Dashboard() {
           peopleById={peopleById}
           onDeleted={(nextRelations) => {
             setRelations(nextRelations);
+            refresh();
+          }}
+          onUpdated={(updatedRelation) => {
+            setRelations((current) => current.map((relation) => (relation.id === updatedRelation.id ? updatedRelation : relation)));
             refresh();
           }}
         />
@@ -467,11 +476,17 @@ function RelationForm({
     });
     return match?.id ?? "";
   }, [form.firstId, form.secondId, partnerRelations]);
+  const rootAvailable = form.type === "partner" || (!form.secondId && !form.parentshipId);
 
   useEffect(() => {
     if (form.type !== "parent") return;
     setForm((prev) => (prev.parentshipId === matchedParentshipId ? prev : { ...prev, parentshipId: matchedParentshipId }));
   }, [form.type, matchedParentshipId]);
+
+  useEffect(() => {
+    if (rootAvailable || !form.root) return;
+    setForm((prev) => ({ ...prev, root: false }));
+  }, [form.root, rootAvailable]);
 
   const update = <K extends keyof RelationFormValues>(key: K, value: RelationFormValues[K]) => {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -493,6 +508,12 @@ function RelationForm({
     if (form.type === "parent" && !form.personId) {
       setStatus("error");
       setError("Relacja parent wymaga wskazania dziecka (person).");
+      return;
+    }
+
+    if (form.root && !rootAvailable) {
+      setStatus("error");
+      setError("Relacja parent może być rootem tylko wtedy, gdy ma jednego znanego rodzica.");
       return;
     }
 
@@ -599,9 +620,14 @@ function RelationForm({
 
         <Field $span={2}>
           <CheckboxRow>
-            <input id="root" type="checkbox" checked={form.root} onChange={(e) => update("root", e.target.checked)} />
+            <input id="root" type="checkbox" checked={form.root} disabled={!rootAvailable} onChange={(e) => update("root", e.target.checked)} />
             <Label htmlFor="root">Root (punkt startowy drzewa)</Label>
           </CheckboxRow>
+          <CardHint>
+            {rootAvailable
+              ? "Można mieć wiele rootów naraz — poprzednie punkty startowe pozostaną bez zmian."
+              : "Relacja parent z drugim rodzicem lub parentship nie może być rootem."}
+          </CardHint>
         </Field>
 
         <Field $span={2}>
@@ -676,12 +702,15 @@ function RelationList({
   relations,
   peopleById,
   onDeleted,
+  onUpdated,
 }: {
   relations: Relation[];
   peopleById: Map<string, Person>;
   onDeleted: (nextRelations: Relation[]) => void;
+  onUpdated: (relation: Relation) => void;
 }) {
   const [deletingRelationId, setDeletingRelationId] = useState<string | null>(null);
+  const [togglingRootId, setTogglingRootId] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const personRefLabel = (id: string | null | undefined) => {
@@ -696,6 +725,26 @@ function RelationList({
         <PersonHint>{hint.text}</PersonHint>
       </>
     );
+  };
+
+  const handleToggleRoot = async (relation: Relation) => {
+    if (!relationCanBeRoot(relation) && !relation.root) {
+      setDeleteError("Relacja parent może być rootem tylko wtedy, gdy ma jednego znanego rodzica.");
+      return;
+    }
+
+    setTogglingRootId(relation.id);
+    setDeleteError(null);
+
+    try {
+      const nextRoot = !relation.root;
+      await updateDoc(doc(db, "relations", relation.id), { root: nextRoot });
+      onUpdated({ ...relation, root: nextRoot });
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : "Nie udało się zmienić root.");
+    } finally {
+      setTogglingRootId(null);
+    }
   };
 
   const handleDelete = async (relation: Relation) => {
@@ -721,46 +770,68 @@ function RelationList({
   return (
     <Card>
       <CardTitle>Lista relacji</CardTitle>
-      <CardHint>{relations.length} rekordów</CardHint>
+      <CardHint>{relations.length} rekordów · wiele relacji może być root jednocześnie</CardHint>
       {deleteError ? <DeleteStatus>{deleteError}</DeleteStatus> : null}
       {relations.length === 0 ? (
         <Empty>Brak relacji.</Empty>
       ) : (
         <List>
-          {relations.map((relation) => (
-            <ListItem key={relation.id}>
-              <ListItemRow>
-                <ListItemContent>
-                  <ItemTitle>
-                    <TypeBadge $type={relation.type}>{relation.type}</TypeBadge>
-                    {relation.color ? <RelationColorSwatch $color={relation.color} title={`Kolor gałęzi: ${relation.color}`} /> : null}
-                    {relation.root ? <RootBadge>root</RootBadge> : null}
-                    {relation.id}
-                  </ItemTitle>
-                  <ItemMeta>
-                    first: {personRefLabel(refId(relation.first))}
-                    {" · "}
-                    second: {personRefLabel(refId(relation.second))}
-                  </ItemMeta>
-                  {relation.type === "parent" ? (
+          {relations.map((relation) => {
+            const canBeRoot = relationCanBeRoot(relation);
+            const busy = deletingRelationId !== null || togglingRootId !== null;
+
+            return (
+              <ListItem key={relation.id}>
+                <ListItemRow>
+                  <ListItemContent>
+                    <ItemTitle>
+                      <TypeBadge $type={relation.type}>{relation.type}</TypeBadge>
+                      {relation.color ? <RelationColorSwatch $color={relation.color} title={`Kolor gałęzi: ${relation.color}`} /> : null}
+                      {relation.root ? <RootBadge>root</RootBadge> : null}
+                      {relation.id}
+                    </ItemTitle>
                     <ItemMeta>
-                      person: {personRefLabel(refId(relation.person))}
+                      first: {personRefLabel(refId(relation.first))}
                       {" · "}
-                      parentship: {refId(relation.parentship) ?? "—"}
+                      second: {personRefLabel(refId(relation.second))}
                     </ItemMeta>
-                  ) : null}
-                </ListItemContent>
-                <DeleteButton
-                  type="button"
-                  disabled={deletingRelationId !== null}
-                  onClick={() => void handleDelete(relation)}
-                  aria-label={`Usuń relację ${relation.type}`}
-                >
-                  {deletingRelationId === relation.id ? "Usuwanie…" : "Usuń"}
-                </DeleteButton>
-              </ListItemRow>
-            </ListItem>
-          ))}
+                    {relation.type === "parent" ? (
+                      <ItemMeta>
+                        person: {personRefLabel(refId(relation.person))}
+                        {" · "}
+                        parentship: {refId(relation.parentship) ?? "—"}
+                      </ItemMeta>
+                    ) : null}
+                  </ListItemContent>
+                  <ListItemActions>
+                    <RootToggleButton
+                      type="button"
+                      $active={relation.root}
+                      disabled={busy || (!canBeRoot && !relation.root)}
+                      title={
+                        canBeRoot || relation.root
+                          ? relation.root
+                            ? "Wyłącz root"
+                            : "Ustaw jako root (bez usuwania innych)"
+                          : "Relacja parent z drugim rodzicem lub parentship nie może być rootem"
+                      }
+                      onClick={() => void handleToggleRoot(relation)}
+                    >
+                      {togglingRootId === relation.id ? "…" : relation.root ? "Root ✓" : "Ustaw root"}
+                    </RootToggleButton>
+                    <DeleteButton
+                      type="button"
+                      disabled={busy}
+                      onClick={() => void handleDelete(relation)}
+                      aria-label={`Usuń relację ${relation.type}`}
+                    >
+                      {deletingRelationId === relation.id ? "Usuwanie…" : "Usuń"}
+                    </DeleteButton>
+                  </ListItemActions>
+                </ListItemRow>
+              </ListItem>
+            );
+          })}
         </List>
       )}
     </Card>
@@ -1199,6 +1270,42 @@ const PersonSelectButton = styled.button`
 `;
 const ListItemContent = styled.div`
   min-width: 0;
+`;
+
+const ListItemActions = styled.div`
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  align-items: center;
+  justify-content: flex-end;
+`;
+
+const RootToggleButton = styled.button<{ $active: boolean }>`
+  border: 1px solid ${({ $active }) => ($active ? "#3d5a4c" : "var(--line)")};
+  background: ${({ $active }) => ($active ? "#3d5a4c" : "#fff")};
+  color: ${({ $active }) => ($active ? "#fff" : "var(--ink)")};
+  padding: 0.4rem 0.6rem;
+  font: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease,
+    opacity 0.15s ease;
+
+  &:hover:not(:disabled) {
+    background: ${({ $active }) => ($active ? "#2f463b" : "#efe8dc")};
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  &:disabled {
+    opacity: 0.55;
+    cursor: default;
+  }
 `;
 
 const DeleteButton = styled.button`
