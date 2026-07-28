@@ -17,6 +17,7 @@ import { deletePersonWithRelations, getPersonDeletionImpact } from "@/features/p
 import { emptyPersonForm, type PersonFormValues, personFormPayload, personToForm, validatePersonForm } from "@/features/personForm";
 import { deleteRelationWithDependents, getRelationDeletionImpact } from "@/features/relationDeletion";
 import { useGenealogyRealtime } from "@/features/useGenealogyRealtime";
+import { useTreeEdgeRoutes } from "@/features/useTreeEdgeRoutes";
 import { useTreeLayoutEditor } from "@/features/useTreeLayoutEditor";
 import { db } from "@/firebase";
 
@@ -71,6 +72,7 @@ export function Home() {
   );
   const [interactionMode, setInteractionMode] = useState<InteractionMode>("view");
   const [showBirthSurname, setShowBirthSurname] = useState(false);
+  const [lineEditMode, setLineEditMode] = useState(false);
   const [exportingPng, setExportingPng] = useState(false);
   const [exportPngError, setExportPngError] = useState<string | null>(null);
   const [draft, setDraft] = useState<RelationDraft | null>(null);
@@ -104,6 +106,7 @@ export function Home() {
     [dataEditMode, graph.nodes, openPersonEditor, showBirthSurname],
   );
   const layout = useTreeLayoutEditor(automaticDiagramNodes, graph.edges, rootId, layoutEditMode);
+  const edgeLayout = useTreeEdgeRoutes(graph.edges, rootId, layoutEditMode && lineEditMode);
   const diagramNodes = layout.nodes;
   const downloadTreePng = useCallback(async () => {
     if (exportingPng) return;
@@ -175,10 +178,11 @@ export function Home() {
   const changeInteractionMode = (nextMode: InteractionMode) => {
     if (nextMode !== "view" && !canEdit) return;
     if (nextMode === interactionMode) return;
-    if (interactionMode === "layout" && layout.isDirty) {
+    if (interactionMode === "layout" && (layout.isDirty || edgeLayout.isDirty)) {
       const discard = window.confirm("Masz niezapisane zmiany układu. Odrzucić je i zmienić tryb?");
       if (!discard) return;
       layout.discard();
+      edgeLayout.discard();
     }
     if (nextMode !== "data") {
       setDraft(null);
@@ -358,6 +362,24 @@ export function Home() {
     await deletePersonWithRelations(person, people, relations);
     setEditingPerson(null);
   };
+  const layoutIsDirty = layout.isDirty || edgeLayout.isDirty;
+  const layoutSaving = layout.saving || edgeLayout.saving;
+  const layoutDirtyCount = layout.dirtyCount + edgeLayout.dirtyCount;
+  const layoutPersistedCount = layout.persistedCount + edgeLayout.persistedCount;
+  const edgeSelected = Boolean(edgeLayout.selectedEdgeId);
+  const saveTreeLayout = async () => {
+    const nodesSaved = await layout.save();
+    if (!nodesSaved) return false;
+    return edgeLayout.save();
+  };
+  const discardTreeLayout = () => {
+    layout.discard();
+    edgeLayout.discard();
+  };
+  const resetAllTreeLayout = () => {
+    layout.resetAll();
+    edgeLayout.resetAll();
+  };
   return (
     <Canvas ref={canvasRef}>
       <ReactFlow
@@ -365,7 +387,7 @@ export function Home() {
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         defaultNodes={diagramNodes}
-        edges={graph.edges}
+        edges={edgeLayout.edges}
         nodesDraggable={layoutEditMode}
         nodesConnectable={dataEditMode}
         elementsSelectable={layoutEditMode}
@@ -374,7 +396,11 @@ export function Home() {
         connectOnClick={false}
         onConnectEnd={onConnectEnd}
         onInit={layout.onInit}
-        onNodeClick={layout.onNodeClick}
+        onNodeClick={(event, node) => {
+          edgeLayout.clearSelection();
+          layout.onNodeClick(event, node);
+        }}
+        onEdgeClick={edgeLayout.onEdgeClick}
         onNodeDragStart={layout.onNodeDragStart}
         onNodeDrag={layout.onNodeDrag}
         onNodeDragStop={layout.onNodeDragStop}
@@ -406,9 +432,15 @@ export function Home() {
                     onChange={(event) => layout.setMovementMode(event.target.checked ? "node" : "branch")}
                   />
                   <ModeTrack aria-hidden="true" />
-                  <AutomaticLayoutMovementValue>
-                    {layout.movementMode === "branch" ? "Cała gałąź" : "Tylko kafelek"}
-                  </AutomaticLayoutMovementValue>
+                  <AutomaticLayoutMovementValue>{layout.movementMode === "branch" ? "Cała gałąź" : "Tylko kafelek"}</AutomaticLayoutMovementValue>
+                </AutomaticLayoutMovementControl>
+              </AutomaticLayoutField>
+              <AutomaticLayoutField>
+                <AutomaticLayoutLabel htmlFor="layout-line-mode">Linie</AutomaticLayoutLabel>
+                <AutomaticLayoutMovementControl>
+                  <ModeInput id="layout-line-mode" type="checkbox" checked={lineEditMode} onChange={(event) => setLineEditMode(event.target.checked)} />
+                  <ModeTrack aria-hidden="true" />
+                  <AutomaticLayoutMovementValue>{lineEditMode ? "Ręczne zgięcia" : "Automatyczne"}</AutomaticLayoutMovementValue>
                 </AutomaticLayoutMovementControl>
               </AutomaticLayoutField>
               <AutomaticLayoutField>
@@ -509,32 +541,44 @@ export function Home() {
                   <span>
                     {layout.collisionCount > 0
                       ? `Kolizje: ${layout.collisionCount}`
-                      : layout.isDirty
-                        ? `Zmiany: ${layout.dirtyCount}`
-                        : `Ustawione: ${layout.persistedCount}`}
+                      : layoutIsDirty
+                        ? `Zmiany: ${layoutDirtyCount}`
+                        : `Ustawione: ${layoutPersistedCount}`}
                   </span>
                 </LayoutSummary>
                 <LayoutActions>
                   <LayoutAction
                     type="button"
                     $primary
-                    onClick={() => void layout.save()}
-                    disabled={!layout.isDirty || layout.saving || layout.collisionCount > 0}
+                    onClick={() => void saveTreeLayout()}
+                    disabled={!layoutIsDirty || layoutSaving || layout.collisionCount > 0}
                     title="Zapisz układ"
                   >
                     <Save size={17} aria-hidden="true" />
-                    <span>{layout.saving ? "Zapisywanie" : "Zapisz"}</span>
+                    <span>{layoutSaving ? "Zapisywanie" : "Zapisz"}</span>
                   </LayoutAction>
-                  <LayoutIconAction type="button" onClick={layout.undo} disabled={!layout.canUndo} title="Cofnij zmianę" aria-label="Cofnij zmianę">
+                  <LayoutIconAction
+                    type="button"
+                    onClick={edgeSelected ? edgeLayout.undo : layout.undo}
+                    disabled={edgeSelected ? !edgeLayout.canUndo : !layout.canUndo}
+                    title="Cofnij zmianę"
+                    aria-label="Cofnij zmianę"
+                  >
                     <Undo2 size={18} aria-hidden="true" />
                   </LayoutIconAction>
-                  <LayoutIconAction type="button" onClick={layout.redo} disabled={!layout.canRedo} title="Ponów zmianę" aria-label="Ponów zmianę">
+                  <LayoutIconAction
+                    type="button"
+                    onClick={edgeSelected ? edgeLayout.redo : layout.redo}
+                    disabled={edgeSelected ? !edgeLayout.canRedo : !layout.canRedo}
+                    title="Ponów zmianę"
+                    aria-label="Ponów zmianę"
+                  >
                     <Redo2 size={18} aria-hidden="true" />
                   </LayoutIconAction>
                   <LayoutIconAction
                     type="button"
-                    onClick={layout.resetSelected}
-                    disabled={!layout.selectedNodeId}
+                    onClick={edgeSelected ? edgeLayout.resetSelected : layout.resetSelected}
+                    disabled={!edgeSelected && !layout.selectedNodeId}
                     title="Przywróć automatyczne położenie zaznaczenia"
                     aria-label="Przywróć automatyczne położenie zaznaczenia"
                   >
@@ -542,8 +586,8 @@ export function Home() {
                   </LayoutIconAction>
                   <LayoutIconAction
                     type="button"
-                    onClick={layout.resetAll}
-                    disabled={!layout.isDirty && layout.persistedCount === 0}
+                    onClick={resetAllTreeLayout}
+                    disabled={!layoutIsDirty && layoutPersistedCount === 0}
                     title="Przywróć cały układ automatyczny"
                     aria-label="Przywróć cały układ automatyczny"
                   >
@@ -551,8 +595,8 @@ export function Home() {
                   </LayoutIconAction>
                   <LayoutIconAction
                     type="button"
-                    onClick={layout.discard}
-                    disabled={!layout.isDirty}
+                    onClick={discardTreeLayout}
+                    disabled={!layoutIsDirty}
                     title="Odrzuć niezapisane zmiany"
                     aria-label="Odrzuć niezapisane zmiany"
                   >
@@ -560,6 +604,7 @@ export function Home() {
                   </LayoutIconAction>
                 </LayoutActions>
                 {layout.error ? <LayoutError>{layout.error}</LayoutError> : null}
+                {edgeLayout.error ? <LayoutError>{edgeLayout.error}</LayoutError> : null}
               </LayoutTools>
             ) : null}
           </ModeControls>
