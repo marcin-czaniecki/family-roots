@@ -1464,6 +1464,18 @@ const Canvas = styled.div`
     display: none !important;
   }
 
+  .genealogy-flow.is-exporting .react-flow__node > article,
+  .genealogy-flow.is-exporting .react-flow__node > div {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+    transition: none !important;
+  }
+
+  .genealogy-flow.is-exporting [role="tooltip"] {
+    display: none !important;
+  }
+
   .genealogy-flow.is-exporting [data-layout-selected="true"] {
     outline: none !important;
   }

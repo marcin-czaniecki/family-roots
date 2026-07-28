@@ -97,7 +97,7 @@ export async function downloadGenealogyExport(viewport: HTMLElement, nodes: Node
 
   flowElement?.classList.add("is-exporting");
   flowElement?.classList.toggle("is-print-export", variant === "print");
-  await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+  await new Promise<void>((resolve) => window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve())));
 
   try {
     let blob: Blob | null;
